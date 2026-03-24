@@ -1,0 +1,33 @@
+[Unit]
+Description=SSL Certificate Puller - Pull and deploy cert from OpenList
+Documentation=man:cert-node-pull(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 敏感配置通过 EnvironmentFile 注入，不在进程列表泄露
+EnvironmentFile=-/etc/default/cert-node
+
+ExecStart=/usr/local/bin/cert-node-pull.sh
+
+# 安全加固 (Debian 12 systemd 252+)
+User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/ssl /etc/nginx /var/log /tmp
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+
+# 超时保护
+TimeoutStartSec=5min
+
+# 失败时不立即重试（由 timer 处理周期）
+Restart=no
+
+# 日志标识（journalctl -u cert-puller 可筛选）
+SyslogIdentifier=cert-puller
+
+[Install]
+WantedBy=multi-user.target
