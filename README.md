@@ -1,6 +1,7 @@
-# SSL 证书跨服务器自动分发系统
-
+# SSL 证书跨服务器自动申请分发系统
+ps：vibe coding产自用仓库
 基于 acme.sh + OpenList(WebDAV) + Systemd 的 SSL 证书自动化管理方案，支持多域名、多节点，全程 Telegram 实时通知。
+
 
 ## 🏗 架构
 
