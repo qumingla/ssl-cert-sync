@@ -63,6 +63,18 @@ html_escape() {
 send_tg_msg() {
     local title="$1"
     local body="${2:-}"
+
+    # 自动获取公网 IP
+    if [[ -z "${MASTER_PUBLIC_IP:-}" ]]; then
+        MASTER_PUBLIC_IP="$(curl -s -4 --max-time 2 ifconfig.me 2>/dev/null || echo '未知IP')"
+    fi
+    local ip_info="[角色: Master] [IP: ${MASTER_PUBLIC_IP}]"
+    if [[ -n "${body}" ]]; then
+        body="${body}\n\n${ip_info}"
+    else
+        body="${ip_info}"
+    fi
+
     local safe_title safe_body text
     safe_title="$(html_escape "${title}")"
     safe_body="$(html_escape "${body}")"

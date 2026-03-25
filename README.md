@@ -196,10 +196,13 @@ openssl x509 -noout -enddate -in /etc/nginx/ssl/example.com/example.com.cer
 > **WEBDAV_URL** 和 **CERT_BASE_DIR** 末尾**不要带斜杠**，否则路径会出现双斜杠错误。
 
 > [!IMPORTANT]
-> Master 端会自动读取本地证书有效期，若**剩余时间 > 7 天**则完全跳过该域名（不调用 API），有效防止 Let's Encrypt 频率限制 (429 Rate Limited)。
+> Master 端会自动读取本地证书有效期，若**剩余时间 > 7 天**则完全跳过该域名（不调用 API），有效防止 Let's Encrypt 频率限制 (429 Rate Limited)。Node 端也具备完全对称的机制，本地证书剩余 > 7 天则连 WebDAV 都不请求。
 
 > [!IMPORTANT]
 > `<domain>.sha256` 最后上传，确保 Node 读到新 hash 时证书文件已就绪（防竞态）。
+
+> [!TIP]
+> **TG 通知静默与标识**：不论 Master 还是 Node，如果所有域名都未更新（被跳过），脚本会完全静默不发送通知。有更新或报错时才会通知。另外，所有通知默认会在末尾附带发送端机器的**公网 IP 和[角色]标识**，方便在多节点下快速区分服务器。
 
 > [!TIP]
 > Node 服务重载**仅在至少一个域名证书更新后**才执行，且只执行一次。无更新时完全静默退出，零 nginx 抖动。

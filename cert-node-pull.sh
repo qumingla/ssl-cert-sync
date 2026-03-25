@@ -55,6 +55,18 @@ html_escape() {
 
 send_tg_msg() {
     local title="$1"; local body="${2:-}"
+
+    # 自动获取公网 IP 并追加到 body（带缓存避免频繁请求）
+    if [[ -z "${NODE_PUBLIC_IP:-}" ]]; then
+        NODE_PUBLIC_IP="$(curl -s -4 --max-time 2 ifconfig.me 2>/dev/null || echo '未知IP')"
+    fi
+    local ip_info="[角色: Node] [IP: ${NODE_PUBLIC_IP}]"
+    if [[ -n "${body}" ]]; then
+        body="${body}\n\n${ip_info}"
+    else
+        body="${ip_info}"
+    fi
+
     local safe_title safe_body text
     safe_title="$(html_escape "${title}")"
     safe_body="$(html_escape "${body}")"
@@ -106,6 +118,22 @@ process_domain() {
 
     install -d -m 700 "${tmp_dir}"
     log "INFO" "---- 检查域名: *.${domain} ----"
+
+    # 5a-pre. 本地证书有效期预检（剩余 > RENEW_DAYS_BEFORE 天则跳过，不请求 WebDAV）
+    local renew_days="${RENEW_DAYS_BEFORE:-7}"
+    if [[ -f "${chain_file}" ]]; then
+        local expire_epoch now_epoch days_left
+        expire_epoch=$(openssl x509 -noout -enddate -in "${chain_file}" 2>/dev/null \
+            | cut -d= -f2 | xargs -I{} date -d '{}' '+%s' 2>/dev/null || echo 0)
+        now_epoch=$(date '+%s')
+        days_left=$(( (expire_epoch - now_epoch) / 86400 ))
+        if (( days_left > renew_days )); then
+            log "INFO" "[${domain}] 本地证书剩余 ${days_left} 天 > ${renew_days} 天，跳过检查"
+            cleanup_tmp "${tmp_dir}"
+            return 2
+        fi
+        log "INFO" "[${domain}] 本地证书剩余 ${days_left} 天 ≤ ${renew_days} 天，检查远端更新"
+    fi
 
     # 5a. 预检：拉取远程 SHA256
     local remote_sha256_tmp="${tmp_dir}/remote.sha256"
