@@ -163,6 +163,33 @@ process_domain() {
 
     log "INFO" "---- 处理域名: *.${domain} ----"
 
+    # 6a-pre. 本地证书有效期预检（剩余 > 7 天则跳过，避免频繁调用 Let's Encrypt）
+    local renew_days="${RENEW_DAYS_BEFORE:-7}"
+    # acme.sh 为通配符证书创建的目录名带星号前缀: *.domain_ecc 或 domain_ecc（RSA）
+    # 必须用 glob 扫描，不能直接拼字符串路径
+    local acme_cert=""
+    local _f
+    for _f in \
+        "${ACME_HOME}/"*".${domain}_ecc/fullchain.cer" \
+        "${ACME_HOME}/${domain}_ecc/fullchain.cer" \
+        "${ACME_HOME}/${domain}/fullchain.cer"; do
+        [[ -f "${_f}" ]] && { acme_cert="${_f}"; break; }
+    done
+    if [[ -n "${acme_cert}" ]]; then
+        local expire_epoch now_epoch days_left
+        expire_epoch=$(openssl x509 -noout -enddate -in "${acme_cert}" 2>/dev/null \
+            | cut -d= -f2 | xargs -I{} date -d '{}' '+%s' 2>/dev/null || echo 0)
+        now_epoch=$(date '+%s')
+        days_left=$(( (expire_epoch - now_epoch) / 86400 ))
+        if (( days_left > renew_days )); then
+            log "INFO" "[${domain}] 证书剩余 ${days_left} 天 > ${renew_days} 天，跳过申请"
+            return 2  # 2 = 跳过（未调用 LE，无需通知）
+        fi
+        log "INFO" "[${domain}] 证书剩余 ${days_left} 天 ≤ ${renew_days} 天，触发续签"
+    else
+        log "INFO" "[${domain}] 本地无证书缓存，首次申请"
+    fi
+
     # 导出 Cloudflare 凭证（acme.sh 自动选择 CF_Token 或 CF_Key+CF_Email）
     [[ -n "${CF_Token:-}"  ]] && export CF_Token
     [[ -n "${CF_Key:-}"   ]] && export CF_Key
@@ -265,27 +292,34 @@ main() {
     install -m 640 /dev/null "${LOG_FILE}" 2>/dev/null || true
     pre_check
 
-    local success_domains=()
+    local updated_domains=()
+    local skipped_domains=()
     local failed_domains=()
 
     for domain in "${DOMAINS[@]}"; do
-        if process_domain "${domain}"; then
-            success_domains+=("${domain}")
-        else
-            failed_domains+=("${domain}")
-        fi
+        local rc=0
+        process_domain "${domain}" || rc=$?
+        case ${rc} in
+            0) updated_domains+=("${domain}") ;;
+            2) skipped_domains+=("${domain}")  ;;
+            *) failed_domains+=("${domain}")   ;;
+        esac
     done
 
-    # 汇总通知
-    local summary="成功: ${#success_domains[@]}/${#DOMAINS[@]} 个域名"
-    if [[ ${#failed_domains[@]} -gt 0 ]]; then
-        summary+="\n失败域名: $(printf '%s\n' "${failed_domains[@]}")"
-        send_tg_msg "⚠️ [SUMMARY] 证书同步部分失败" "${summary}"
-    else
-        send_tg_msg "✅ [SUMMARY] 所有证书同步完成" "${summary}"
-    fi
+    log "INFO" "======== 任务结束: 更新 ${#updated_domains[@]} 跳过 ${#skipped_domains[@]} 失败 ${#failed_domains[@]} ========"
 
-    log "INFO" "======== 任务结束: 成功 ${#success_domains[@]}，失败 ${#failed_domains[@]} ========"
+    # 仅在有更新或失败时发 TG，全部跳过则静默退出
+    if [[ ${#updated_domains[@]} -gt 0 || ${#failed_domains[@]} -gt 0 ]]; then
+        local summary="更新: ${#updated_domains[@]} | 跳过: ${#skipped_domains[@]} | 失败: ${#failed_domains[@]}"
+        [[ ${#updated_domains[@]} -gt 0 ]] && \
+            summary+="\n\n已续签:\n$(printf '  • %s\n' "${updated_domains[@]}")"
+        [[ ${#failed_domains[@]} -gt 0 ]] && \
+            summary+="\n\n失败:\n$(printf '  • %s\n' "${failed_domains[@]}")"
+        local icon="✅"; [[ ${#failed_domains[@]} -gt 0 ]] && icon="⚠️"
+        send_tg_msg "${icon} [SUMMARY] 证书同步汇总" "${summary}"
+    else
+        log "INFO" "所有域名证书均在有效期内，无需续签，不发送 TG 通知"
+    fi
 
     # 若有失败域名，以非零退出让 systemd 记录错误
     [[ ${#failed_domains[@]} -eq 0 ]] || exit 1
