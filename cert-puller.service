@@ -11,12 +11,11 @@ EnvironmentFile=-/etc/default/cert-node
 
 ExecStart=/usr/local/bin/cert-node-pull.sh
 
-# 安全加固 (Debian 12 systemd 252+)
+# 安全加固
 User=root
 NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/etc/ssl /etc/nginx /var/log /tmp /run
-ProtectHome=yes
+
+# ProtectHome=yes
 PrivateTmp=yes
 RestrictSUIDSGID=yes
 

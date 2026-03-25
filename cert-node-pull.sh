@@ -62,7 +62,7 @@ send_tg_msg() {
     fi
     local ip_info="[角色: Node] [IP: ${NODE_PUBLIC_IP}]"
     if [[ -n "${body}" ]]; then
-        body="${body}\n\n${ip_info}"
+        body="${body}"$'\n\n'"${ip_info}"
     else
         body="${ip_info}"
     fi
@@ -173,7 +173,7 @@ process_domain() {
     if [[ "${actual_sha256}" != "${remote_sha256}" ]]; then
         log "ERROR" "[${domain}] SHA256 校验失败 期望:${remote_sha256} 实际:${actual_sha256}"
         send_tg_msg "🚨 [ERROR] [${NODE_NAME}] SHA256 校验失败: ${domain}" \
-            "期望: ${remote_sha256}\n实际: ${actual_sha256}\n已中止"
+            "期望: ${remote_sha256}"$'\n'"实际: ${actual_sha256}"$'\n'"已中止"
         cleanup_tmp "${tmp_dir}"; return 1
     fi
     log "INFO" "[${domain}] ✅ SHA256 完整性校验通过"
@@ -247,7 +247,7 @@ main() {
         if ! eval "${SERVICE_TEST_CMD}" >> "${LOG_FILE}" 2>&1; then
             log "ERROR" "❌ 服务配置校验失败，已更新证书但服务未重载"
             send_tg_msg "🚨 [ERROR] [${NODE_NAME}] 服务校验失败" \
-                "命令: ${SERVICE_TEST_CMD}\n已更新域名: $(printf '%s\n' "${UPDATED_DOMAINS[@]}")\n请手动检查 Nginx 配置"
+                "命令: ${SERVICE_TEST_CMD}"$'\n'"已更新域名: $(printf '%s\n' "${UPDATED_DOMAINS[@]}")"$'\n'"请手动检查 Nginx 配置"
             exit 1
         fi
 
@@ -262,10 +262,10 @@ main() {
         # 构造成功通知
         local update_list=""
         for i in "${!UPDATED_DOMAINS[@]}"; do
-            update_list+="${UPDATED_DOMAINS[$i]} → 到期: ${UPDATED_EXPIRY[$i]}\n"
+            update_list+="${UPDATED_DOMAINS[$i]} → 到期: ${UPDATED_EXPIRY[$i]}"$'\n'
         done
 
-        local summary="更新: ${#UPDATED_DOMAINS[@]} 个 | 跳过: ${skipped} 个 | 失败: ${#failed_domains[@]} 个\n\n${update_list}"
+        local summary="更新: ${#UPDATED_DOMAINS[@]} 个 | 跳过: ${skipped} 个 | 失败: ${#failed_domains[@]} 个"$'\n\n'"${update_list}"
         [[ ${#failed_domains[@]} -gt 0 ]] && summary+="失败: $(printf '%s\n' "${failed_domains[@]}")"
         local icon="✅"; [[ ${#failed_domains[@]} -gt 0 ]] && icon="⚠️"
         send_tg_msg "${icon} [INFO] [${NODE_NAME}] 证书更新汇总" "${summary}"
