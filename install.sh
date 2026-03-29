@@ -6,6 +6,7 @@
 #   交互式: bash install.sh               （推荐）
 #   安装:   bash install.sh <master|node>
 #   卸载:   bash install.sh uninstall <master|node>
+#   更新配置: bash install.sh update_config <master|node>
 ################################################################################
 
 set -euo pipefail
@@ -37,26 +38,31 @@ if [[ -z "${ACTION}" ]]; then
     echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}\n"
     echo -e "  ${GREEN}1)${NC} 安装 Master 端（申请证书 + 上传 WebDAV）"
     echo -e "  ${GREEN}2)${NC} 安装 Node   端（拉取证书 + 自动重载 Nginx）"
-    echo -e "  ${RED}3)${NC} 卸载 Master 端"
-    echo -e "  ${RED}4)${NC} 卸载 Node   端"
-    echo -e "  ${YELLOW}5)${NC} 退出\n"
-    read -r -p "请输入选项 [1-5]: " choice
+    echo -e "  ${YELLOW}3)${NC} 更新 Master 端配置（从本目录覆盖到系统）"
+    echo -e "  ${YELLOW}4)${NC} 更新 Node   端配置（从本目录覆盖到系统）"
+    echo -e "  ${RED}5)${NC} 卸载 Master 端"
+    echo -e "  ${RED}6)${NC} 卸载 Node   端"
+    echo -e "  ${YELLOW}7)${NC} 退出\n"
+    read -r -p "请输入选项 [1-7]: " choice
     case "${choice}" in
-        1) ACTION="install";   ROLE="master" ;;
-        2) ACTION="install";   ROLE="node"   ;;
-        3) ACTION="uninstall"; ROLE="master" ;;
-        4) ACTION="uninstall"; ROLE="node"   ;;
-        5) echo "已退出。"; exit 0 ;;
+        1) ACTION="install";       ROLE="master" ;;
+        2) ACTION="install";       ROLE="node"   ;;
+        3) ACTION="update_config"; ROLE="master" ;;
+        4) ACTION="update_config"; ROLE="node"   ;;
+        5) ACTION="uninstall";     ROLE="master" ;;
+        6) ACTION="uninstall";     ROLE="node"   ;;
+        7) echo "已退出。"; exit 0 ;;
         *) error "无效选项: ${choice}"; exit 1 ;;
     esac
     echo ""
 fi
 
-if [[ "${ACTION}" != "install" && "${ACTION}" != "uninstall" ]] || \
+if [[ "${ACTION}" != "install" && "${ACTION}" != "uninstall" && "${ACTION}" != "update_config" ]] || \
    [[ "${ROLE}"   != "master"  && "${ROLE}"   != "node"     ]]; then
     echo -e "用法:"
     echo -e "  交互式: $0"
     echo -e "  安装:   $0 <master|node>"
+    echo -e "  更新配置: $0 update_config <master|node>"
     echo -e "  卸载:   $0 uninstall <master|node>"
     exit 1
 fi
@@ -140,6 +146,42 @@ install_node() {
     info "下一步: 编辑 /etc/default/cert-node，然后运行:"
     info "  systemctl start cert-puller.service  # 立即测试"
     info "  journalctl -u cert-puller -f          # 查看日志"
+}
+
+# ── 更新配置 ──────────────────────────────────────────────────────────────────
+update_config_master() {
+    # 配置文件（始终覆盖；如旧文件存在则先备份）
+    if [[ -f /etc/default/acme-master ]]; then
+        cp /etc/default/acme-master "/etc/default/acme-master.bak.$(date '+%Y%m%d_%H%M%S')"
+        warn "旧配置已备份，正在覆盖新配置..."
+    fi
+    install -m 600 "${SCRIPT_DIR}/etc_default_acme-master.conf" /etc/default/acme-master
+    info "✅ Master 配置已更新"
+    warn "请编辑并确认配置文件内容: /etc/default/acme-master"
+}
+
+update_config_node() {
+    # 配置文件（始终覆盖；如旧文件存在则先备份）
+    if [[ -f /etc/default/cert-node ]]; then
+        cp /etc/default/cert-node "/etc/default/cert-node.bak.$(date '+%Y%m%d_%H%M%S')"
+        warn "旧配置已备份，正在覆盖新配置..."
+    fi
+    install -m 600 "${SCRIPT_DIR}/etc_default_cert-node.conf" /etc/default/cert-node
+    
+    # 重新读取配置并确认目录
+    local cert_base
+    cert_base="$(bash -c 'source /etc/default/cert-node 2>/dev/null; printf "%s" "${CERT_BASE_DIR:-/etc/ssl/certs/acme}"')"
+    cert_base="${cert_base%/}"
+    mkdir -p "${cert_base}"
+    chmod 700 "${cert_base}"
+    info "✅ Node 配置已更新"
+    info "证书目录: ${cert_base} (700)"
+    warn "请编辑并确认配置文件内容: /etc/default/cert-node"
+    
+    # 可选：如果服务运行中，可以提示重启
+    if systemctl is-active --quiet cert-puller.timer; then
+        info "可以手动运行重新测试: systemctl start cert-puller.service"
+    fi
 }
 
 # ── Master 卸载 ───────────────────────────────────────────────────────────────
@@ -226,6 +268,12 @@ case "${ACTION}" in
         case "${ROLE}" in
             master) install_master ;;
             node)   install_node   ;;
+        esac
+        ;;
+    update_config)
+        case "${ROLE}" in
+            master) update_config_master ;;
+            node)   update_config_node   ;;
         esac
         ;;
     uninstall)
