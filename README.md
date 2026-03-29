@@ -5,16 +5,16 @@ vibe coding产自用仓库
 
 ## 🏗 架构
 
-```
-Master VPS                          OpenList (WebDAV)              Node VPS × N
-──────────────                      ─────────────────              ────────────
-acme.sh (DNS API)                   /ssl/example.com/              systemd timer
-  └→ 申请/续期证书         push →   ├── example.com.key      pull ← cert-node-pull.sh
-  └→ 双重校验                       ├── example.com.cer             └→ SHA256 校验
-  └→ 计算 SHA256           push →   └── example.com.sha256          └→ RSA/ECC 校验
-cert-master-sync.sh                                                 └→ 原子部署
-  └→ 判定有效期 (>7天则跳过)                                        └→ nginx reload
-  └→ TG 汇总通知                                                    └→ TG 汇总通知
+```text
+Master VPS                      OpenList (WebDAV)               Node VPS × N
+------------------              ------------------              ------------------
+acme.sh (DNS API)               /ssl/example.com/               systemd timer
+  └→ 申请/续期证书        push →  ├── example.com.key     pull ←  cert-node-pull.sh
+  └→ 双重校验                   ├── example.com.cer               └→ SHA256 校验
+  └→ 计算 SHA256        push →  └── example.com.sha256            └→ RSA/ECC 校验
+cert-master-sync.sh                                              └→ 原子部署
+  └→ 判定有效期 (>7天则跳过)                                    └→ nginx reload
+  └→ TG 汇总通知                                                └→ TG 汇总通知
 ```
 
 ## 📁 文件说明
@@ -97,13 +97,26 @@ ssl_certificate     /etc/nginx/ssl/example.com/example.com.cer;
 ssl_certificate_key /etc/nginx/ssl/example.com/example.com.key;
 ```
 
-### 卸载系统
+### 更新配置
 
-如果需要卸载系统，可重新运行脚本：
+如果在部署后修改了配置模板（如增删域名、更换 TG Bot Token 等），可通过脚本直接更新配置（会将本目录的文件覆盖至 `/etc/default/`）：
 
 ```bash
 bash install.sh
-# （在菜单中选择 3 或 4 进行卸载）
+# （在交互菜单中选择 3 或 4 进行配置更新）
+
+# 或者直接使用命令行：
+bash install.sh update_config master
+bash install.sh update_config node
+```
+
+### 卸载系统
+
+如果需要卸载系统组件，可重新运行脚本：
+
+```bash
+bash install.sh
+# （在交互菜单中选择 5 或 6 进行卸载）
 
 # 或者直接使用命令行：
 bash install.sh uninstall master
@@ -159,7 +172,6 @@ Node 端 Timer 由 `install.sh node` 自动安装启用（`cert-puller.timer`，
 | 配置文件权限 | `chmod 600 /etc/default/...` |
 | 临时文件安全擦除 | `shred -u` |
 | 私有临时目录 | systemd `PrivateTmp=yes` |
-| 写权限最小化 | systemd `ReadWritePaths` 白名单（含 `/run` 以支持 `nginx -t`） |
 | 双重证书校验 | SHA256 完整性 + 公钥一致性（RSA/ECC 通用） |
 | 自动回滚 | `nginx -t` 失败时恢复最新备份 |
 
