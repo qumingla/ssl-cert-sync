@@ -28,15 +28,24 @@ source "${CONFIG_FILE}"
   "${STAGING_BASE:=/tmp/acme_staging}" \
   "${LOG_FILE:=/var/log/cert-master-sync.log}"
 
-# 确保至少填写了一种 Cloudflare 认证方式
-if [[ -z "${CF_Token:-}" && -z "${CF_Key:-}" ]]; then
-    echo "[FATAL] Cloudflare 认证未配置: 请在配置文件中填写 CF_Token 或 CF_Key+CF_Email" >&2
+# 确保全局默认 DNS 插件已配置
+if [[ -z "${DNS_PROVIDER:-}" ]]; then
+    echo "[FATAL] 未配置全局默认 DNS 插件: 请在配置文件设置 DNS_PROVIDER (例如 dns_cf)" >&2
     exit 1
 fi
 
 # 检查 DOMAINS 数组
 if [[ ${#DOMAINS[@]} -eq 0 ]]; then
-    echo "[FATAL] DOMAINS 数组为空，请在配置文件中至少填写一个域名" >&2
+    # 尝试自动从 DOMAIN_DNS_PROVIDER 关联数组中提取域名（键名）
+    if declare -p DOMAIN_DNS_PROVIDER >/dev/null 2>&1; then
+        if [[ ${#DOMAIN_DNS_PROVIDER[@]} -gt 0 ]]; then
+            DOMAINS=("${!DOMAIN_DNS_PROVIDER[@]}")
+        fi
+    fi
+fi
+
+if [[ ${#DOMAINS[@]} -eq 0 ]]; then
+    echo "[FATAL] 域名列表为空: 请在 DOMAINS 数组或 DOMAIN_DNS_PROVIDER 中至少填写一个域名" >&2
     exit 1
 fi
 
@@ -70,7 +79,7 @@ send_tg_msg() {
     fi
     local ip_info="[角色: Master] [IP: ${MASTER_PUBLIC_IP}]"
     if [[ -n "${body}" ]]; then
-        body="${body}\n\n${ip_info}"
+        body="${body}"$'\n\n'"${ip_info}"
     else
         body="${ip_info}"
     fi
@@ -167,9 +176,46 @@ pre_check() {
     install -d -m 700 "${STAGING_BASE}"
 }
 
-# ── 6. 处理单个域名（申请 → 提取 → 上传）────────────────────────────────────
+# ── 6. 设置 DNS 凭证函数 ──────────────────────────────────────────────────────
+setup_dns_credentials() {
+    local plugin="$1"
+    case "${plugin}" in
+        dns_cf)
+            [[ -n "${CF_Token:-}"  ]] && export CF_Token
+            [[ -n "${CF_Key:-}"   ]] && export CF_Key
+            [[ -n "${CF_Email:-}" ]] && export CF_Email
+            ;;
+        dns_ali)
+            [[ -n "${Ali_Key:-}"    ]] && export Ali_Key
+            [[ -n "${Ali_Secret:-}" ]] && export Ali_Secret
+            ;;
+        dns_tencent)
+            [[ -n "${Tencent_SecretId:-}"  ]] && export Tencent_SecretId
+            [[ -n "${Tencent_SecretKey:-}" ]] && export Tencent_SecretKey
+            ;;
+        dns_dp)
+            [[ -n "${DP_Id:-}"  ]] && export DP_Id
+            [[ -n "${DP_Key:-}" ]] && export DP_Key
+            ;;
+        dns_huaweicloud)
+            [[ -n "${HUAWEICLOUD_USERNAME:-}"    ]] && export HUAWEICLOUD_USERNAME
+            [[ -n "${HUAWEICLOUD_PASSWORD:-}"    ]] && export HUAWEICLOUD_PASSWORD
+            [[ -n "${HUAWEICLOUD_DOMAIN_NAME:-}" ]] && export HUAWEICLOUD_DOMAIN_NAME
+            ;;
+        dns_gd)
+            [[ -n "${GD_Key:-}"    ]] && export GD_Key
+            [[ -n "${GD_Secret:-}" ]] && export GD_Secret
+            ;;
+        *)
+            log "WARN" "未知 DNS 插件 ${plugin}，假定环境变量已在配置中 export"
+            ;;
+    esac
+}
+
+# ── 7. 处理单个域名（申请 → 提取 → 上传）────────────────────────────────────
 process_domain() {
     local domain="$1"
+    local is_new=0
     local staging_dir="${STAGING_BASE}/${domain}"
     install -d -m 700 "${staging_dir}"
 
@@ -200,19 +246,26 @@ process_domain() {
         log "INFO" "[${domain}] 证书剩余 ${days_left} 天 ≤ ${renew_days} 天，触发续签"
     else
         log "INFO" "[${domain}] 本地无证书缓存，首次申请"
+        is_new=1
     fi
 
-    # 导出 Cloudflare 凭证（acme.sh 自动选择 CF_Token 或 CF_Key+CF_Email）
-    [[ -n "${CF_Token:-}"  ]] && export CF_Token
-    [[ -n "${CF_Key:-}"   ]] && export CF_Key
-    [[ -n "${CF_Email:-}" ]] && export CF_Email
+    # 查找当前域名的 DNS 插件（优先 DOMAIN_DNS_PROVIDER，回退 DNS_PROVIDER）
+    local dns_plugin="${DNS_PROVIDER}"
+    if declare -p DOMAIN_DNS_PROVIDER >/dev/null 2>&1; then
+        if [[ -n "${DOMAIN_DNS_PROVIDER[${domain}]:-}" ]]; then
+            dns_plugin="${DOMAIN_DNS_PROVIDER[${domain}]}"
+        fi
+    fi
+    log "INFO" "[${domain}] 采用 DNS 插件: ${dns_plugin}"
+    setup_dns_credentials "${dns_plugin}"
+
     local acme_bin="${ACME_HOME}/acme.sh"
     local acme_log="${staging_dir}/acme_issue.log"
 
     "${acme_bin}" \
         --issue \
         ${FORCE_REISSUE:+--force} \
-        --dns dns_cf \
+        --dns "${dns_plugin}" \
         -d "*.${domain}" \
         -d "${domain}" \
         --home "${ACME_HOME}" \
@@ -268,8 +321,10 @@ process_domain() {
 
     # 6d. 计算 SHA256（对 fullchain.pem 计算）
     local sha256_file="${staging_dir}/cert.sha256"
-    sha256sum "${chain_file}" | awk '{print $1}' > "${sha256_file}"
-    log "INFO" "[${domain}] SHA256: $(cat "${sha256_file}")"
+    local cert_sha256
+    cert_sha256="$(sha256sum "${chain_file}" | awk '{print $1}')"
+    echo "${cert_sha256}" > "${sha256_file}"
+    log "INFO" "[${domain}] SHA256: ${cert_sha256}"
 
     # 6e. 确保 WebDAV 子目录存在，再上传（sha256 最后，防竞态）
     ensure_webdav_dir "${domain}"
@@ -288,15 +343,27 @@ process_domain() {
     find "${staging_dir}" -type f -exec shred -u {} \; 2>/dev/null || \
         rm -f "${staging_dir}"/*.pem "${staging_dir}"/*.sha256 2>/dev/null || true
 
-    # 6g. 成功通知
-    send_tg_msg "✅ [SUCCESS] 证书同步: ${domain}" \
+    # 7g. 成功通知
+    local notify_title="✅ [SUCCESS] 证书同步: ${domain}"
+    if [[ ${is_new} -eq 1 ]]; then
+        notify_title="🆕 [NEW] 首次申请成功: ${domain}"
+    else
+        notify_title="🔄 [RENEW] 证书续签成功: ${domain}"
+    fi
+
+    send_tg_msg "${notify_title}" \
         "到期: ${cert_expiry}
-SHA256: $(cat "${sha256_file}" 2>/dev/null || echo N/A)
+DNS渠道: ${dns_plugin}
+SHA256: ${cert_sha256}
 上传: ${WEBDAV_URL}/${domain}/
 时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     log "INFO" "[${domain}] ---- 处理完成 ----"
-    return 0
+    if [[ ${is_new} -eq 1 ]]; then
+        return 3
+    else
+        return 0
+    fi
 }
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -305,6 +372,7 @@ main() {
     pre_check
 
     local updated_domains=()
+    local new_domains=()
     local skipped_domains=()
     local failed_domains=()
 
@@ -314,19 +382,22 @@ main() {
         case ${rc} in
             0) updated_domains+=("${domain}") ;;
             2) skipped_domains+=("${domain}")  ;;
+            3) new_domains+=("${domain}")      ;;
             *) failed_domains+=("${domain}")   ;;
         esac
     done
 
-    log "INFO" "======== 任务结束: 更新 ${#updated_domains[@]} 跳过 ${#skipped_domains[@]} 失败 ${#failed_domains[@]} ========"
+    log "INFO" "======== 任务结束: 新发 ${#new_domains[@]} 续签 ${#updated_domains[@]} 跳过 ${#skipped_domains[@]} 失败 ${#failed_domains[@]} ========"
 
     # 仅在有更新或失败时发 TG，全部跳过则静默退出
-    if [[ ${#updated_domains[@]} -gt 0 || ${#failed_domains[@]} -gt 0 ]]; then
-        local summary="更新: ${#updated_domains[@]} | 跳过: ${#skipped_domains[@]} | 失败: ${#failed_domains[@]}"
+    if [[ ${#updated_domains[@]} -gt 0 || ${#new_domains[@]} -gt 0 || ${#failed_domains[@]} -gt 0 ]]; then
+        local summary="新发: ${#new_domains[@]} | 续签: ${#updated_domains[@]} | 跳过: ${#skipped_domains[@]} | 失败: ${#failed_domains[@]}"
+        [[ ${#new_domains[@]} -gt 0 ]] && \
+            summary+=$'\n\n'"🆕 新申请:"$'\n'"$(printf '  • %s\n' "${new_domains[@]}")"
         [[ ${#updated_domains[@]} -gt 0 ]] && \
-            summary+="\n\n已续签:\n$(printf '  • %s\n' "${updated_domains[@]}")"
+            summary+=$'\n\n'"🔄 已续签:"$'\n'"$(printf '  • %s\n' "${updated_domains[@]}")"
         [[ ${#failed_domains[@]} -gt 0 ]] && \
-            summary+="\n\n失败:\n$(printf '  • %s\n' "${failed_domains[@]}")"
+            summary+=$'\n\n'"❌ 失败:"$'\n'"$(printf '  • %s\n' "${failed_domains[@]}")"
         local icon="✅"; [[ ${#failed_domains[@]} -gt 0 ]] && icon="⚠️"
         send_tg_msg "${icon} [SUMMARY] 证书同步汇总" "${summary}"
     else
