@@ -5,7 +5,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 # 敏感配置通过 EnvironmentFile 注入，不在进程列表泄露
 EnvironmentFile=-/etc/default/cert-node
 
@@ -19,8 +19,9 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 RestrictSUIDSGID=yes
 
-# 超时保护
-TimeoutStartSec=5min
+# 超时保护（simple 模式下 TimeoutStartSec 仅等待进程 ready，实际执行用 TimeoutStopSec 兜底）
+TimeoutStartSec=30
+TimeoutStopSec=10min
 
 # 失败时不立即重试（由 timer 处理周期）
 Restart=no
