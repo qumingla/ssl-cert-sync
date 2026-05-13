@@ -180,7 +180,7 @@ Node 端 Timer 由 `install.sh node` 自动安装启用（`cert-puller.timer`，
 
 | 特性 | 实现方式 |
 |------|---------|
-| 密钥不泄露于进程列表 | `EnvironmentFile=-/etc/default/...` |
+| 敏感配置文件权限 | 脚本直接 `source` 权限为 600 的 `/etc/default/...` |
 | 私钥权限 | `install -m 600` |
 | 证书目录权限 | `chmod 700 ${CERT_BASE_DIR}` |
 | 配置文件权限 | `chmod 600 /etc/default/...` |

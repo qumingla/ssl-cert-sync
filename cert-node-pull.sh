@@ -13,6 +13,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# systemd 的默认 PATH 可能缺少 /usr/sbin 或自定义 nginx 路径，导致脚本内
+# `nginx -t` 与手动登录 shell 命中的命令不同。
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:${PATH}}"
+
 # ── 0. 加载配置 ───────────────────────────────────────────────────────────────
 CONFIG_FILE="/etc/default/cert-node"
 if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -42,6 +46,38 @@ log() {
     local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
     echo "[${ts}] [${level}] [${NODE_NAME}] $*" >> "${LOG_FILE}"
     echo "[${level}] $*" >&2
+}
+
+LAST_CMD_OUTPUT=""
+
+tail_cmd_output() {
+    local output="$1"
+    if [[ -z "${output}" ]]; then
+        printf '无输出'
+        return 0
+    fi
+    printf '%s\n' "${output}" | tail -n 20
+}
+
+run_service_cmd() {
+    local label="$1"
+    local cmd="$2"
+    local output status=0
+
+    output="$(eval "${cmd}" 2>&1)" || status=$?
+    LAST_CMD_OUTPUT="${output}"
+
+    if [[ -n "${output}" ]]; then
+        while IFS= read -r line; do
+            log "INFO" "[${label}] ${line}"
+        done <<< "${output}"
+    fi
+
+    if [[ ${status} -ne 0 ]]; then
+        log "ERROR" "${label}失败 (exit ${status})"
+        return "${status}"
+    fi
+    return 0
 }
 
 # ── 2. Telegram 告警 ──────────────────────────────────────────────────────────
@@ -244,17 +280,21 @@ main() {
     # 若有更新，统一执行一次服务重载
     if [[ ${#UPDATED_DOMAINS[@]} -gt 0 ]]; then
         log "INFO" "执行服务校验: ${SERVICE_TEST_CMD}"
-        if ! eval "${SERVICE_TEST_CMD}" >> "${LOG_FILE}" 2>&1; then
+        if ! run_service_cmd "服务校验" "${SERVICE_TEST_CMD}"; then
+            local test_output
+            test_output="$(tail_cmd_output "${LAST_CMD_OUTPUT}")"
             log "ERROR" "❌ 服务配置校验失败，已更新证书但服务未重载"
             send_tg_msg "🚨 [ERROR] [${NODE_NAME}] 服务校验失败" \
-                "命令: ${SERVICE_TEST_CMD}"$'\n'"已更新域名: $(printf '%s\n' "${UPDATED_DOMAINS[@]}")"$'\n'"请手动检查 Nginx 配置"
+                "命令: ${SERVICE_TEST_CMD}"$'\n'"退出输出:"$'\n'"${test_output}"$'\n\n'"已更新域名: $(printf '%s\n' "${UPDATED_DOMAINS[@]}")"$'\n'"请手动检查 Nginx 配置"
             exit 1
         fi
 
         log "INFO" "执行服务重载: ${SERVICE_RELOAD_CMD}"
-        if ! eval "${SERVICE_RELOAD_CMD}" >> "${LOG_FILE}" 2>&1; then
+        if ! run_service_cmd "服务重载" "${SERVICE_RELOAD_CMD}"; then
+            local reload_output
+            reload_output="$(tail_cmd_output "${LAST_CMD_OUTPUT}")"
             send_tg_msg "🚨 [ERROR] [${NODE_NAME}] 服务重载失败" \
-                "命令: ${SERVICE_RELOAD_CMD}"
+                "命令: ${SERVICE_RELOAD_CMD}"$'\n'"退出输出:"$'\n'"${reload_output}"
             exit 1
         fi
         log "INFO" "✅ 服务重载成功"

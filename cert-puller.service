@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 敏感配置通过 EnvironmentFile 注入，不在进程列表泄露
-EnvironmentFile=-/etc/default/cert-node
+# 配置文件包含 Bash 数组，不能作为 systemd EnvironmentFile 解析。
+# cert-node-pull.sh 会自行 source /etc/default/cert-node。
 
 ExecStart=/usr/local/bin/cert-node-pull.sh
 
