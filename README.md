@@ -5,16 +5,46 @@ vibe coding产自用仓库
 
 ## 🏗 架构
 
-```text
-Master VPS                      OpenList (WebDAV)               Node VPS × N
-------------------              ------------------              ------------------
-acme.sh (DNS API)               /ssl/example.com/               systemd timer
-  └→ 申请/续期证书        push →  ├── example.com.key     pull ←  cert-node-pull.sh
-  └→ 双重校验                   ├── example.com.cer               └→ SHA256 校验
-  └→ 计算 SHA256        push →  └── example.com.sha256            └→ RSA/ECC 校验
-cert-master-sync.sh                                              └→ 原子部署
-  └→ 判定有效期 (>7天则跳过)                                    └→ nginx reload
-  └→ TG 汇总通知                                                └→ TG 汇总通知
+```mermaid
+flowchart LR
+    subgraph MASTER["Master VPS"]
+        direction TB
+        ACME["acme.sh<br/>DNS API"]
+        ISSUE["申请 / 续期证书"]
+        VERIFY_M["私钥与证书校验"]
+        HASH_M["计算 SHA256"]
+        SYNC["cert-master-sync.sh<br/>有效期判定 / TG 汇总"]
+
+        ACME --> ISSUE --> VERIFY_M --> HASH_M --> SYNC
+    end
+
+    subgraph WEBDAV["OpenList (WebDAV)"]
+        direction TB
+        DIR["/ssl/example.com/"]
+        KEY["example.com.key"]
+        CERT["example.com.cer"]
+        SHA["example.com.sha256"]
+
+        DIR --> KEY
+        DIR --> CERT
+        DIR --> SHA
+    end
+
+    subgraph NODE["Node VPS × N"]
+        direction TB
+        TIMER["systemd timer"]
+        PULL["cert-node-pull.sh"]
+        CHECK_HASH["SHA256 校验"]
+        CHECK_KEY["RSA / ECC 公钥校验"]
+        DEPLOY["原子部署"]
+        RELOAD["nginx reload"]
+        NOTICE["TG 汇总通知"]
+
+        TIMER --> PULL --> CHECK_HASH --> CHECK_KEY --> DEPLOY --> RELOAD --> NOTICE
+    end
+
+    SYNC -- "push: key / cert / sha256" --> WEBDAV
+    WEBDAV -- "pull" --> PULL
 ```
 
 ## 📁 文件说明
