@@ -44,6 +44,7 @@ if ! declare -p DOMAINS >/dev/null 2>&1; then
 fi
 
 : "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-1}"
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 CERT_BASE_DIR="${CERT_BASE_DIR:-/etc/ssl/certs/acme}"
@@ -109,6 +110,11 @@ html_escape() {
 
 send_tg_msg() {
     local title="$1"; local body="${2:-}"
+
+    if [[ "${TELEGRAM_ENABLED}" != "1" ]]; then
+        log "INFO" "TG 已由 Master 接管，跳过节点直发: ${title}"
+        return 0
+    fi
 
     if [[ -z "${TG_BOT_TOKEN}" || -z "${TG_CHAT_ID}" ]]; then
         log "INFO" "TG 未配置，跳过通知: ${title}"

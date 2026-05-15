@@ -77,8 +77,17 @@ export function Nodes() {
     return window.location.origin.replace(/\/+$/, "");
   };
 
+  const publicBaseUrl = resolvePublicBaseUrl();
   const installCommand = newNodeToken
-    ? `curl -fsSL ${resolvePublicBaseUrl()}/api/agent.sh | bash -s -- --token ${shellQuote(newNodeToken)} --master-url ${shellQuote(resolvePublicBaseUrl())} --cert-dir ${shellQuote(newNodeCertDir)}`
+    ? `curl -fsSL ${publicBaseUrl}/api/agent.sh | bash -s -- --token ${shellQuote(newNodeToken)} --master-url ${shellQuote(publicBaseUrl)} --cert-dir ${shellQuote(newNodeCertDir)}`
+    : "";
+  const displayInstallCommand = newNodeToken
+    ? [
+        `curl -fsSL ${publicBaseUrl}/api/agent.sh | bash -s -- \\`,
+        `  --token ${shellQuote(newNodeToken)} \\`,
+        `  --master-url ${shellQuote(publicBaseUrl)} \\`,
+        `  --cert-dir ${shellQuote(newNodeCertDir)}`,
+      ].join("\n")
     : "";
 
   const copyToClipboard = async (text: string) => {
@@ -177,9 +186,11 @@ export function Nodes() {
           form.reset();
         }
       }}>
-        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className={newNodeToken
+          ? "w-[calc(100vw-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto p-0"
+          : "w-[calc(100vw-2rem)] sm:max-w-lg max-h-[90vh] overflow-y-auto p-0"}>
           {!newNodeToken ? (
-            <form onSubmit={form.handleSubmit(onSubmit)}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="p-4 sm:p-6">
               <DialogHeader>
                 <DialogTitle>{t("nodes.addTitle")}</DialogTitle>
                 <DialogDescription>{t("nodes.addDescription")}</DialogDescription>
@@ -206,49 +217,39 @@ export function Nodes() {
             </form>
           ) : (
             <>
-              <DialogHeader className="pr-10">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <DialogHeader className="border-b px-4 py-5 pr-14 sm:px-6">
+                <div className="flex items-start gap-4">
+                  <div className="mt-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                     <CheckCircle2 className="h-5 w-5" />
                   </div>
                   <div className="space-y-1.5">
                     <DialogTitle className="text-xl">{t("nodes.registered")}</DialogTitle>
-                    <DialogDescription className="leading-6">
+                    <DialogDescription className="max-w-2xl leading-7">
                       {t("nodes.commandDescription")}
                     </DialogDescription>
                   </div>
                 </div>
               </DialogHeader>
-              <div className="py-4 space-y-5">
-                <div className="rounded-xl border bg-muted/30 p-4">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 text-primary">
-                      <TerminalSquare className="h-5 w-5" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="font-medium">{t("nodes.installCommandTitle")}</p>
-                      <p className="text-sm text-muted-foreground">{t("nodes.runOnNode")}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-5 px-4 py-5 sm:px-6">
+                <div className="grid gap-4 lg:grid-cols-2">
                   <div className="grid gap-2">
                     <Label>{t("nodes.masterUrl")}</Label>
-                    <div className="rounded-lg border bg-background px-3 py-2 font-mono text-sm break-all">
-                      <div className="flex items-start gap-2">
+                    <div className="rounded-xl border bg-muted/20 p-4">
+                      <div className="flex items-start gap-3">
                         <Globe className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span>{resolvePublicBaseUrl()}</span>
+                        <div className="min-w-0">
+                          <div className="font-mono text-sm leading-6 break-all">{publicBaseUrl}</div>
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("nodes.masterUrlHint")}</p>
+                        </div>
                       </div>
                     </div>
-                    <p className="text-xs text-muted-foreground">{t("nodes.masterUrlHint")}</p>
                   </div>
                   <div className="grid gap-2">
                     <Label>{t("nodes.certDir")}</Label>
-                    <div className="rounded-lg border bg-background px-3 py-2 font-mono text-sm break-all">
-                      <div className="flex items-start gap-2">
+                    <div className="rounded-xl border bg-muted/20 p-4">
+                      <div className="flex items-start gap-3">
                         <Folder className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span>{newNodeCertDir}</span>
+                        <div className="min-w-0 font-mono text-sm leading-6 break-all">{newNodeCertDir}</div>
                       </div>
                     </div>
                   </div>
@@ -256,9 +257,13 @@ export function Nodes() {
 
                 <div className="overflow-hidden rounded-xl border">
                   <div className="flex flex-col gap-3 border-b bg-muted/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="font-medium">{t("nodes.installCommandTitle")}</p>
-                      <p className="text-xs text-muted-foreground">{t("nodes.installCommandHint")}</p>
+                    <div className="flex items-start gap-3">
+                      <TerminalSquare className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                      <div>
+                        <p className="font-medium">{t("nodes.installCommandTitle")}</p>
+                        <p className="text-xs text-muted-foreground">{t("nodes.installCommandHint")}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t("nodes.runOnNode")}</p>
+                      </div>
                     </div>
                     <Button
                       size="sm"
@@ -270,10 +275,10 @@ export function Nodes() {
                       {t("common.copy")}
                     </Button>
                   </div>
-                  <div className="bg-background px-4 py-3">
-                    <code className="block whitespace-pre-wrap break-all font-mono text-sm leading-6">
-                      {installCommand}
-                    </code>
+                  <div className="bg-background px-4 py-4">
+                    <pre className="overflow-x-auto font-mono text-sm leading-7 text-foreground">
+                      <code>{displayInstallCommand}</code>
+                    </pre>
                   </div>
                 </div>
               </div>

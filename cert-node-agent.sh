@@ -251,6 +251,7 @@ write_runtime_config_for_domains() {
         printf "WEBDAV_AUTH=%s\n" "$(shell_quote "${WEBDAV_AUTH}")"
         printf "CERT_BASE_DIR=%s\n" "$(shell_quote "${CERT_BASE_DIR}")"
         printf "TMP_BASE=%s\n" "$(shell_quote "${TMP_BASE}")"
+        printf "TELEGRAM_ENABLED='0'\n"
         printf "TG_BOT_TOKEN=%s\n" "$(shell_quote "${TG_BOT_TOKEN}")"
         printf "TG_CHAT_ID=%s\n" "$(shell_quote "${TG_CHAT_ID}")"
         printf "SERVICE_TEST_CMD=%s\n" "$(shell_quote "${SERVICE_TEST_CMD}")"
@@ -376,6 +377,7 @@ for raw_line in assignments_path.read_text(encoding="utf-8").splitlines():
     items.append(
         {
             "domainId": domain_id,
+            "domainName": domain_name,
             "deployedSha256": deployed_sha,
             "status": status,
             "expiresAt": local_expiry,
@@ -395,14 +397,76 @@ ack_command_single() {
     local command_id="$1"
     local ack_status="$2"
     local ack_error="$3"
+    local ack_summary="${4:-}"
     local payload
-    payload="$(python3 - "${ack_status}" "${ack_error}" <<'PY'
+    payload="$(python3 - "${ack_status}" "${ack_error}" "${ack_summary}" <<'PY'
 import json
 import sys
-print(json.dumps({"status": sys.argv[1], "error": sys.argv[2] or None}, ensure_ascii=False))
+print(json.dumps({"status": sys.argv[1], "error": sys.argv[2] or None, "summary": sys.argv[3] or None}, ensure_ascii=False))
 PY
 )"
     curl_node_api "POST" "/commands/${command_id}/ack" "${payload}" "${STATE_DIR}/ack-${command_id}.json"
+}
+
+build_ack_summary() {
+    local mode="$1"
+    local command_exit_code="$2"
+    python3 - "${REPORT_JSON}" "${NODE_NAME}" "${mode}" "${command_exit_code}" <<'PY'
+import json
+import sys
+
+report_path = sys.argv[1]
+node_name = sys.argv[2]
+mode = sys.argv[3]
+command_exit_code = int(sys.argv[4])
+
+data = json.load(open(report_path, encoding="utf-8"))
+items = data.get("items", [])
+
+def item_name(item: dict[str, object]) -> str:
+    return str(item.get("domainName") or item.get("domainId") or "unknown")
+
+if mode == "delete":
+    names = [item_name(item) for item in items]
+    error_items = [item for item in items if item.get("lastError")]
+    status = "failed" if command_exit_code != 0 or error_items else "completed"
+    if status == "completed":
+        summary = f"节点 {node_name} 已删除 {len(names)} 个域名的本地证书: {', '.join(names)}"
+        error = None
+    else:
+        failed_parts = [
+            f"{item_name(item)} ({item.get('lastError') or '删除失败'})"
+            for item in error_items
+        ] or [", ".join(names)]
+        summary = f"节点 {node_name} 删除本地证书失败。\n目标域名: {', '.join(names)}\n失败详情: {'; '.join(failed_parts)}"
+        error = str(error_items[0].get("lastError") or "Node certificate deletion failed.")
+else:
+    synced = [item_name(item) for item in items if item.get("status") == "synced"]
+    pending = [item_name(item) for item in items if item.get("status") == "pending"]
+    errors = [item for item in items if item.get("status") == "error"]
+    total = len(items)
+    status = "failed" if command_exit_code != 0 or errors else "completed"
+    lines = [f"节点 {node_name} 证书下发完成：成功 {len(synced)} / {total}。"]
+    if synced:
+        lines.append(f"已同步: {', '.join(synced)}")
+    if pending:
+        lines.append(f"待同步: {', '.join(pending)}")
+    if errors:
+        failed_parts = [
+            f"{item_name(item)} ({item.get('lastError') or '同步失败'})"
+            for item in errors
+        ]
+        lines.append(f"失败: {'; '.join(failed_parts)}")
+        error = str(errors[0].get("lastError") or "Node synchronization failed.")
+    elif command_exit_code != 0:
+        lines.append("执行失败，请检查节点日志。")
+        error = "Node synchronization failed."
+    else:
+        error = None
+    summary = "\n".join(lines)
+
+print(json.dumps({"status": status, "error": error, "summary": summary}, ensure_ascii=False))
+PY
 }
 
 process_sync_command() {
@@ -417,14 +481,13 @@ process_sync_command() {
     "${PULL_SCRIPT}" --config "${RUNTIME_CONFIG}" || command_exit_code=$?
     build_report_for_domain_ids "${domain_ids_csv}" "sync" "${command_exit_code}"
     submit_report
-
-    if [[ "${command_exit_code}" -ne 0 ]]; then
-        ack_command_single "${command_id}" "failed" "Node synchronization failed. Check ${LOG_FILE} for details."
-        return 1
-    fi
-
-    ack_command_single "${command_id}" "completed" ""
-    return 0
+    local ack_payload ack_status ack_error ack_summary
+    ack_payload="$(build_ack_summary "sync" "${command_exit_code}")"
+    ack_status="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("status","completed"))' <<< "${ack_payload}")"
+    ack_error="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("error") or "")' <<< "${ack_payload}")"
+    ack_summary="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("summary") or "")' <<< "${ack_payload}")"
+    ack_command_single "${command_id}" "${ack_status}" "${ack_error}" "${ack_summary}"
+    [[ "${ack_status}" == "completed" ]]
 }
 
 process_delete_command() {
@@ -438,14 +501,13 @@ process_delete_command() {
     delete_certificates_for_domains "${domains[@]}" || command_exit_code=$?
     build_report_for_domain_ids "${domain_ids_csv}" "delete" "${command_exit_code}"
     submit_report
-
-    if [[ "${command_exit_code}" -ne 0 ]]; then
-        ack_command_single "${command_id}" "failed" "Node certificate deletion failed. Check ${LOG_FILE} for details."
-        return 1
-    fi
-
-    ack_command_single "${command_id}" "completed" ""
-    return 0
+    local ack_payload ack_status ack_error ack_summary
+    ack_payload="$(build_ack_summary "delete" "${command_exit_code}")"
+    ack_status="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("status","completed"))' <<< "${ack_payload}")"
+    ack_error="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("error") or "")' <<< "${ack_payload}")"
+    ack_summary="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("summary") or "")' <<< "${ack_payload}")"
+    ack_command_single "${command_id}" "${ack_status}" "${ack_error}" "${ack_summary}"
+    [[ "${ack_status}" == "completed" ]]
 }
 
 main() {

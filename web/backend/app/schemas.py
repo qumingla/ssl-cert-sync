@@ -152,6 +152,7 @@ class NodeHeartbeat(BaseModel):
 
 class NodeReportItem(BaseModel):
     domainId: str
+    domainName: str | None = None
     deployedSha256: str | None = None
     status: str
     expiresAt: str | None = None
@@ -165,3 +166,4 @@ class NodeReport(BaseModel):
 class NodeCommandAck(BaseModel):
     status: str = "completed"
     error: str | None = None
+    summary: str | None = None

@@ -13,6 +13,7 @@ from ..jobs import append_log, finish_job
 from ..schemas import NodeCommandAck, NodeHeartbeat, NodeReport
 from ..security import require_node
 from ..serializers import public_assignment
+from ..telegram import send_telegram_message
 from ..timeutil import iso_now
 
 router = APIRouter(prefix="/api/node/v1", tags=["node"])
@@ -209,6 +210,9 @@ async def ack_command(
         job = db.query_one("SELECT status FROM jobs WHERE id = ?", (row["job_id"],))
         if job and job.get("status") == "running":
             append_log(db, row["job_id"], f"[INFO] Node {node['name']} acknowledged command {command_id} ({row['type']}).")
+            if payload.summary:
+                for line in payload.summary.splitlines():
+                    append_log(db, row["job_id"], f"[INFO] {line}")
             if payload.error:
                 append_log(db, row["job_id"], f"[ERROR] {payload.error}")
             finish_job(
@@ -218,6 +222,7 @@ async def ack_command(
                 status="failed" if payload.status == "failed" else "success",
                 error=payload.error,
             )
+            await _notify_node_command_result(db, event_hub, row, node, payload)
 
     return {"success": True, "nodeId": node["id"], "commandId": command_id}
 
@@ -358,3 +363,63 @@ echo "[INFO] Follow logs with: journalctl -u cert-puller -f"
 
 def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+async def _notify_node_command_result(
+    db: Database,
+    event_hub: EventHub,
+    command_row: dict[str, Any],
+    node: dict[str, Any],
+    payload: NodeCommandAck,
+) -> None:
+    settings_row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
+    settings = merged_settings(settings_row["value"] if settings_row else "{}")
+    telegram_settings = settings.get("telegram", {})
+    bot_token = str(telegram_settings.get("botToken") or "").strip()
+    chat_id = str(telegram_settings.get("chatId") or "").strip()
+    if not bot_token or not chat_id:
+        return
+
+    payload_json = loads_object(command_row.get("payload_json"))
+    domain_names = payload_json.get("domainNames") or []
+    if isinstance(domain_names, list):
+        domain_list = ", ".join(str(item) for item in domain_names if item)
+    else:
+        domain_list = ""
+
+    action_label = "节点证书删除" if command_row.get("type") == "delete_domains" else "节点证书下发"
+    success = payload.status != "failed"
+    title = f"{'✅' if success else '🚨'} [NODE] {node['name']} {action_label}{'完成' if success else '失败'}"
+    body_parts: list[str] = []
+    if domain_list:
+        body_parts.append(f"域名: {domain_list}")
+    if payload.summary:
+        body_parts.append(payload.summary)
+    elif payload.error:
+        body_parts.append(payload.error)
+    text = title if not body_parts else f"{title}\n\n" + "\n".join(body_parts)
+
+    try:
+        response = await asyncio.to_thread(send_telegram_message, bot_token, chat_id, text)
+    except Exception as exc:
+        if command_row.get("job_id"):
+            append_log(db, command_row["job_id"], f"[WARN] Failed to send Telegram notification from Master: {exc}")
+        event_hub.publish(
+            "node_notify_failed",
+            "warning",
+            f"Failed to send Telegram notification for node {node['name']}",
+            {"nodeId": node["id"], "commandId": command_row["id"], "error": str(exc)},
+        )
+        return
+
+    message_id = (
+        response.get("result", {}).get("message_id")
+        if isinstance(response.get("result"), dict)
+        else None
+    )
+    if command_row.get("job_id"):
+        append_log(
+            db,
+            command_row["job_id"],
+            f"[INFO] Master Telegram notification sent successfully. message_id={message_id or '(unknown)'}",
+        )
