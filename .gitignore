@@ -3,3 +3,22 @@
 *.local.conf
 *_secret*
 *.bak.*
+.DS_Store
+.env
+
+# Docker Compose 本地持久化目录
+/data/
+/logs/
+/config/
+
+# 前端构建与依赖产物
+node_modules/
+dist/
+web/frontend/node_modules/
+web/frontend/dist/
+
+# Python / 后端本地运行产物
+__pycache__/
+*.py[cod]
+web/backend/.data/
+web/backend/.logs/

@@ -1,0 +1,270 @@
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { api } from "../lib/api";
+import type { DnsChannel } from "../types/api";
+import { Button } from "../components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Card, CardContent } from "../components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Label } from "../components/ui/label";
+import { Plus, Trash, Play, Pencil, X } from "lucide-react";
+import { toast } from "sonner";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
+
+const PROVIDERS = [
+  { id: 'dns_cf', name: 'Cloudflare', fields: ['CF_Token', 'CF_Key', 'CF_Email'] },
+  { id: 'dns_ali', name: 'Aliyun', fields: ['Ali_Key', 'Ali_Secret'] },
+  { id: 'dns_tencent', name: 'Tencent Cloud', fields: ['Tencent_SecretId', 'Tencent_SecretKey'] },
+  { id: 'dns_dp', name: 'DNSPod', fields: ['DP_Id', 'DP_Key'] },
+  { id: 'dns_huaweicloud', name: 'Huawei Cloud', fields: ['HUAWEICLOUD_USERNAME', 'HUAWEICLOUD_PASSWORD', 'HUAWEICLOUD_DOMAIN_NAME'] },
+  { id: 'dns_gd', name: 'GoDaddy', fields: ['GD_Key', 'GD_Secret'] },
+  { id: 'custom', name: 'Custom', fields: [] }, // Custom uses dynamic field array
+];
+
+type FormValues = {
+  id?: string;
+  name: string;
+  provider: string;
+  credentials: Record<string, string>;
+  customFields: { key: string; value: string }[];
+};
+
+export function DnsChannels() {
+  const queryClient = useQueryClient();
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const { data: channels = [], isLoading } = useQuery<DnsChannel[]>({
+    queryKey: ['dns-channels'],
+    queryFn: () => api.get<DnsChannel[]>('/admin/dns-channels'),
+  });
+
+  const form = useForm<FormValues>({
+    defaultValues: { name: "", provider: "dns_cf", credentials: {}, customFields: [] },
+  });
+
+  const { fields: customFields, append, remove } = useFieldArray({
+    control: form.control,
+    name: "customFields"
+  });
+
+  const provider = useWatch({ control: form.control, name: 'provider' });
+
+  useEffect(() => {
+    if (provider === 'custom' && customFields.length === 0) {
+      append({ key: '', value: '' });
+    }
+  }, [provider, customFields.length, append]);
+
+  const saveMutation = useMutation({
+    mutationFn: (data: FormValues) => {
+      const payload: { name: string; provider: string; credentials: Record<string, string> } = { name: data.name, provider: data.provider, credentials: {} };
+
+      if (data.provider === 'custom') {
+        data.customFields.forEach(f => {
+          if (f.key) payload.credentials[f.key] = f.value;
+        });
+      } else {
+        payload.credentials = data.credentials;
+      }
+      
+      if (data.id) return api.patch(`/admin/dns-channels/${data.id}`, payload);
+      return api.post('/admin/dns-channels', payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dns-channels'] });
+      setIsAddOpen(false);
+      form.reset({ name: "", provider: "dns_cf", credentials: {}, customFields: [] });
+      toast.success("DNS Channel saved successfully");
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || "Failed to save DNS channel")
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/admin/dns-channels/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dns-channels'] });
+      setDeleteId(null);
+      toast.success("DNS Channel deleted");
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || "Failed to delete DNS channel")
+  });
+
+  const testMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/admin/dns-channels/${id}/test`),
+    onSuccess: () => toast.success("DNS API Test Passed"),
+    onError: (err: unknown) => toast.error(`Test failed: ${(err as Error).message}`)
+  });
+
+  const onSubmit = (values: FormValues) => {
+    saveMutation.mutate(values);
+  };
+
+  const openEdit = (c: DnsChannel) => {
+    const isCustom = c.provider === 'custom';
+    const cFields = isCustom ? Object.keys(c.credentials).map((k) => ({ key: k, value: '' })) : [];
+    
+    // For non-custom, we don't load the masked values into the form inputs to avoid sending '***' back
+    const creds: Record<string, string> = {};
+    if (!isCustom) {
+      const providerInfo = PROVIDERS.find(p => p.id === c.provider);
+      providerInfo?.fields.forEach(f => creds[f] = '');
+    }
+
+    form.reset({
+      id: c.id,
+      name: c.name,
+      provider: c.provider,
+      credentials: creds,
+      customFields: cFields
+    });
+    setIsAddOpen(true);
+  };
+
+  const selectedProviderInfo = PROVIDERS.find(p => p.id === provider) || PROVIDERS[0];
+
+  return (
+    <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">DNS Channels</h1>
+        <Button className="w-full sm:w-auto" onClick={() => { form.reset({ id: undefined, name: "", provider: "dns_cf", credentials: {}, customFields: [] }); setIsAddOpen(true); }}>
+          <Plus className="mr-2 h-4 w-4" /> Add Channel
+        </Button>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="w-full overflow-x-auto">
+            <Table className="min-w-[720px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Provider</TableHead>
+                <TableHead>Configuration</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow><TableCell colSpan={4} className="text-center py-8">Loading...</TableCell></TableRow>
+              ) : channels.length === 0 ? (
+                <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No channels configured.</TableCell></TableRow>
+              ) : (
+                channels.map((c) => (
+                  <TableRow key={c.id}>
+                    <TableCell className="font-medium">{c.name}</TableCell>
+                    <TableCell>{PROVIDERS.find(p => p.id === c.provider)?.name || c.provider}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      已配置 ({Object.keys(c.credentials || {}).length} keys)
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="sm" onClick={() => testMutation.mutate(c.id)}>
+                        <Play className="mr-2 h-4 w-4" /> Test
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(c)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(c.id)}>
+                        <Trash className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md max-h-[90vh] overflow-y-auto">
+          <form onSubmit={form.handleSubmit(onSubmit)}>
+            <DialogHeader>
+              <DialogTitle>{form.getValues('id') ? 'Edit DNS Channel' : 'Add DNS Channel'}</DialogTitle>
+              <DialogDescription>Add API credentials for DNS validation during certificate requests.</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4 max-h-[60vh] overflow-y-auto px-1">
+              <div className="grid gap-2">
+                <Label htmlFor="name">Channel Name</Label>
+                <Input id="name" placeholder="Cloudflare Main" required {...form.register('name')} />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="provider">Provider</Label>
+                <Select value={provider} onValueChange={(val) => val && form.setValue('provider', val)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROVIDERS.map(p => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              <div className="p-4 bg-muted/50 rounded-md space-y-4 mt-2 border">
+                <p className="text-sm font-medium">Credentials for {selectedProviderInfo.name}</p>
+                {form.getValues('id') && <p className="text-xs text-muted-foreground">Leave fields blank to keep existing configured values.</p>}
+                
+                {provider !== 'custom' ? (
+                  selectedProviderInfo.fields.map(field => (
+                    <div key={field} className="grid gap-2">
+                      <Label htmlFor={field}>{field}</Label>
+                      <Input 
+                        id={field} 
+                        type="password" 
+                        required={!form.getValues('id')} // Not required on edit
+                        placeholder={form.getValues('id') ? "********" : ""}
+                        {...form.register(`credentials.${field}`)} 
+                      />
+                    </div>
+                  ))
+                ) : (
+                  <div className="space-y-3">
+                    {customFields.map((field, index) => (
+                      <div key={field.id} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <Input placeholder="Key (e.g. CUSTOM_API)" required {...form.register(`customFields.${index}.key`)} className="w-full sm:flex-1" />
+                        <Input type="password" placeholder={form.getValues('id') ? "********" : "Value"} required={!form.getValues('id')} {...form.register(`customFields.${index}.value`)} className="w-full sm:flex-1" />
+                        <Button type="button" variant="ghost" size="icon" onClick={() => remove(index)} className="self-end sm:self-auto">
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button type="button" variant="outline" size="sm" onClick={() => append({ key: '', value: '' })}>
+                      <Plus className="mr-2 h-4 w-4" /> Add Field
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="submit" disabled={saveMutation.isPending}>
+                {saveMutation.isPending ? 'Saving...' : 'Save Channel'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Delete DNS Channel</DialogTitle>
+            <DialogDescription>
+              Are you sure? Domains using this channel will fail to renew certificates.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => deleteId && deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete Channel'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

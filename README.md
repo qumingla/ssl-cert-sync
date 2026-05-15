@@ -58,6 +58,44 @@ flowchart LR
 | `cert-puller.service` | `/etc/systemd/system/cert-puller.service` | Node Systemd 服务 |
 | `cert-puller.timer` | `/etc/systemd/system/cert-puller.timer` | Node 定时触发器 |
 | `install.sh` | 任意目录运行 | 一键安装/卸载脚本 |
+| `web/frontend/` | Master Web UI | Web 管理控制台前端 |
+| `web/backend/` | Master API | FastAPI + SQLite 管理后端 |
+| `docker-compose.yml` | Master 容器部署 | Web 控制台 Docker Compose 部署入口 |
+
+## 🖥 Web 管理控制台（开发中）
+
+已新增 Master Web 控制台骨架：
+
+- 前端：React + TypeScript + Vite，位于 `web/frontend/`
+- 后端：FastAPI + SQLite，位于 `web/backend/`
+- 数据：默认写入 `web/backend/.data/ssl-sync.db`，Compose 模式写入 `./data/`
+- 登录：默认 `admin / admin`，生产环境必须通过环境变量修改
+
+本地后端启动：
+
+```bash
+cd web/backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
+```
+
+Docker Compose 部署：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少修改 SSL_SYNC_SECRET_KEY 和 SSL_SYNC_ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+访问：
+
+```text
+http://<master-ip>:8080
+```
+
+> 当前后端默认运行在安全元数据模式：Web UI 的申请/续签/同步会写入 SQLite 状态和任务日志，但不会直接执行 acme.sh。后续会在 `cert-master-sync.sh` 支持单域名参数后，通过 `SSL_SYNC_ENABLE_SCRIPT_EXEC=1` 接入真实脚本执行。
 
 ## 🌐 多 DNS 供应商支持
 
