@@ -96,6 +96,7 @@ http://<master-ip>:8080
 ```
 
 > 当前 Web 控制台已经接通真实执行链路：DNS 渠道测试会发起真实 `acme.sh --staging` 验证，WebDAV 测试会执行真实 `PUT/GET/DELETE`，Telegram 测试会真实发消息，域名的申请/续签/同步会调用 `cert-master-sync.sh` 或导出本地证书后上传 WebDAV。当前仅 Node 的 `Run Now` 仍是元数据动作，等待 node 命令队列接入。
+> 后端镜像内已内置 `acme.sh`，当容器中的 `ACME Home` 为空时，会自动从 `/opt/acme.sh` 补全到配置路径，避免首次部署因未手工安装而失败。
 
 ## 🌐 多 DNS 供应商支持
 

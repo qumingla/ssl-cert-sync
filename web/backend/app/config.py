@@ -12,6 +12,7 @@ class AppConfig:
     log_dir: Path
     runtime_config_dir: Path
     runtime_tmp_dir: Path
+    bundled_acme_home: Path
     secret_key: str
     admin_username: str
     admin_password: str
@@ -28,12 +29,14 @@ def load_config() -> AppConfig:
     default_frontend_dist = _default_frontend_dist(backend_root)
     default_runtime_config_dir = Path(os.getenv("SSL_SYNC_RUNTIME_CONFIG_DIR", "/etc/ssl-cert-sync")).expanduser()
     default_runtime_tmp_dir = Path(os.getenv("SSL_SYNC_RUNTIME_TMP_DIR", "/tmp/ssl-sync-runtime")).expanduser()
+    default_bundled_acme_home = Path(os.getenv("SSL_SYNC_BUNDLED_ACME_HOME", "/opt/acme.sh")).expanduser()
 
     data_dir = Path(os.getenv("SSL_SYNC_DATA_DIR", str(default_data_dir))).expanduser()
     log_dir = Path(os.getenv("SSL_SYNC_LOG_DIR", str(default_log_dir))).expanduser()
     db_path = Path(os.getenv("SSL_SYNC_DB_PATH", str(data_dir / "ssl-sync.db"))).expanduser()
     runtime_config_dir = Path(os.getenv("SSL_SYNC_RUNTIME_CONFIG_DIR", str(default_runtime_config_dir))).expanduser()
     runtime_tmp_dir = Path(os.getenv("SSL_SYNC_RUNTIME_TMP_DIR", str(default_runtime_tmp_dir))).expanduser()
+    bundled_acme_home = Path(os.getenv("SSL_SYNC_BUNDLED_ACME_HOME", str(default_bundled_acme_home))).expanduser()
     frontend_dist_raw = os.getenv("SSL_SYNC_FRONTEND_DIST", str(default_frontend_dist))
     frontend_dist = Path(frontend_dist_raw).expanduser() if frontend_dist_raw else None
     origins = [
@@ -48,6 +51,7 @@ def load_config() -> AppConfig:
         log_dir=log_dir,
         runtime_config_dir=runtime_config_dir,
         runtime_tmp_dir=runtime_tmp_dir,
+        bundled_acme_home=bundled_acme_home,
         secret_key=os.getenv("SSL_SYNC_SECRET_KEY", "change-me-before-production"),
         admin_username=os.getenv("SSL_SYNC_ADMIN_USERNAME", "admin"),
         admin_password=os.getenv("SSL_SYNC_ADMIN_PASSWORD", "admin"),

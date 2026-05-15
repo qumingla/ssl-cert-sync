@@ -14,10 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash curl openssl ca-certificates \
+    && apt-get install -y --no-install-recommends bash curl git openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY web/backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN git clone --depth=1 https://github.com/acmesh-official/acme.sh.git /opt/acme.sh \
+    && rm -rf /opt/acme.sh/.git \
+    && chmod 755 /opt/acme.sh/acme.sh
 
 COPY web/backend/app /app/app
 COPY cert-master-sync.sh /usr/local/bin/cert-master-sync.sh

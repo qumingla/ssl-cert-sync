@@ -99,7 +99,7 @@ async def run_domain_script(
     if exit_code != 0:
         raise RuntimeError(_tail_output(output, fallback=f"cert-master-sync exited with code {exit_code}"))
 
-    return extract_domain_bundle(settings, domain["domain"])
+    return extract_domain_bundle(config, settings, domain["domain"])
 
 
 async def test_dns_channel_live(
@@ -125,13 +125,11 @@ async def test_dns_channel_live(
     if not real_acme_home_text:
         raise ValueError("ACME Home path is empty")
     real_acme_home = Path(real_acme_home_text).expanduser()
-    real_acme_bin = real_acme_home / "acme.sh"
-    if not real_acme_bin.exists():
-        raise RuntimeError(f"acme.sh not found at {real_acme_bin}")
+    _ensure_acme_home_seeded(config, real_acme_home)
 
     temp_acme_home = Path(mkdtemp(prefix="ssl-sync-dns-test-", dir=str(config.runtime_tmp_dir))) / ".acme.sh"
     temp_acme_home.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(real_acme_bin, temp_acme_home / "acme.sh")
+    shutil.copytree(real_acme_home, temp_acme_home, dirs_exist_ok=True)
     runtime_config = _write_runtime_master_config(
         config,
         domain["domain"],
@@ -159,11 +157,12 @@ async def test_dns_channel_live(
         shutil.rmtree(temp_acme_home.parent, ignore_errors=True)
 
 
-def extract_domain_bundle(settings: dict[str, Any], domain: str) -> DomainBundle:
+def extract_domain_bundle(config: AppConfig, settings: dict[str, Any], domain: str) -> DomainBundle:
     acme_home_text = str(settings.get("acme", {}).get("acmeHome") or "").strip()
     if not acme_home_text:
         raise ValueError("ACME Home path is empty")
     acme_home = Path(acme_home_text).expanduser()
+    _ensure_acme_home_seeded(config, acme_home)
     acme_bin = acme_home / "acme.sh"
     if not acme_bin.exists():
         raise RuntimeError(f"acme.sh not found at {acme_bin}")
@@ -328,6 +327,7 @@ def _write_runtime_master_config(
         f'WEBDAV_URL={_shell_quote(str(webdav_settings.get("url") or ""))}',
         f'WEBDAV_AUTH={_shell_quote(str(webdav_settings.get("auth") or ""))}',
         f'ACME_HOME={_shell_quote(str(acme_home))}',
+        f'BUNDLED_ACME_HOME={_shell_quote(str(config.bundled_acme_home))}',
         f'STAGING_BASE={_shell_quote(str(staging_base))}',
         f'LOG_FILE={_shell_quote(str(config.log_dir / "cert-master-sync.log"))}',
         f'RENEW_DAYS_BEFORE={_shell_quote(str(acme_settings.get("defaultRenewDays") or 7))}',
@@ -418,3 +418,31 @@ def _tail_output(output: str, *, fallback: str) -> str:
     if not lines:
         return fallback
     return "\n".join(lines[-20:])
+
+
+def _ensure_acme_home_seeded(config: AppConfig, acme_home: Path) -> None:
+    acme_bin = acme_home / "acme.sh"
+    if acme_bin.exists():
+        return
+
+    bundled_home = config.bundled_acme_home
+    bundled_bin = bundled_home / "acme.sh"
+    if not bundled_bin.exists():
+        raise RuntimeError(f"acme.sh not found at {acme_bin}, and bundled fallback is missing at {bundled_bin}")
+
+    acme_home.mkdir(parents=True, exist_ok=True)
+    for source in bundled_home.rglob("*"):
+        relative = source.relative_to(bundled_home)
+        destination = acme_home / relative
+        if source.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+    if not acme_bin.exists():
+        raise RuntimeError(f"Failed to bootstrap acme.sh into {acme_home}")
+
+    acme_bin.chmod(0o755)

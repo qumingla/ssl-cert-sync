@@ -155,7 +155,7 @@ async def run_domain_action(
     bundle = None
     try:
         if action == "sync":
-            bundle = extract_domain_bundle(_settings(db), row["domain"])
+            bundle = extract_domain_bundle(request.app.state.config, _settings(db), row["domain"])
             append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {row['domain']}")
             upload_domain_bundle(_settings(db).get("webdav", {}), row["domain"], bundle)
             append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {row['domain']}")

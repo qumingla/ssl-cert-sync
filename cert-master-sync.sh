@@ -63,6 +63,7 @@ fi
 
 # 检查必要变量（CF 凭证二选一，不强制 :?）
 : "${ACME_HOME:=/root/.acme.sh}" \
+  "${BUNDLED_ACME_HOME:=/opt/acme.sh}" \
   "${STAGING_BASE:=/tmp/acme_staging}" \
   "${LOG_FILE:=/var/log/cert-master-sync.log}"
 
@@ -214,11 +215,32 @@ ensure_webdav_dir() {
     log "INFO" "MKCOL ${remote_url} → HTTP ${http_code}"
 }
 
+bootstrap_acme_home() {
+    local acme_bin="${ACME_HOME}/acme.sh"
+    if [[ -x "${acme_bin}" ]]; then
+        return 0
+    fi
+
+    local bundled_bin="${BUNDLED_ACME_HOME}/acme.sh"
+    if [[ ! -x "${bundled_bin}" ]]; then
+        return 1
+    fi
+
+    log "WARN" "ACME_HOME 缺少 acme.sh，尝试从镜像内置目录补全: ${BUNDLED_ACME_HOME} -> ${ACME_HOME}"
+    install -d -m 700 "${ACME_HOME}"
+    cp -a -n "${BUNDLED_ACME_HOME}/." "${ACME_HOME}/"
+    chmod 755 "${ACME_HOME}/acme.sh" 2>/dev/null || true
+    [[ -x "${ACME_HOME}/acme.sh" ]]
+}
+
 # ── 5. 环境预检（全局执行一次）────────────────────────────────────────────────
 pre_check() {
     log "INFO" "======== 开始证书同步任务（共 ${#DOMAINS[@]} 个域名）========"
 
     local acme_bin="${ACME_HOME}/acme.sh"
+    if [[ ! -x "${acme_bin}" ]]; then
+        bootstrap_acme_home || true
+    fi
     if [[ ! -x "${acme_bin}" ]]; then
         log "ERROR" "acme.sh 未找到: ${acme_bin}"
         send_tg_msg "🚨 [FATAL] Master 任务失败" "acme.sh 未安装或路径错误: ${acme_bin}"

@@ -40,6 +40,7 @@ export SSL_SYNC_ADMIN_PASSWORD="change-this"
 | `SSL_SYNC_MASTER_SCRIPT` | `/usr/local/bin/cert-master-sync.sh` | Master sync script path |
 | `SSL_SYNC_RUNTIME_CONFIG_DIR` | `/etc/ssl-cert-sync` | Runtime-generated per-domain shell config directory |
 | `SSL_SYNC_RUNTIME_TMP_DIR` | `/tmp/ssl-sync-runtime` | Temporary workspace for DNS tests and staging files |
+| `SSL_SYNC_BUNDLED_ACME_HOME` | `/opt/acme.sh` | Bundled acme.sh fallback copied into ACME Home when missing |
 
 ## Current Execution Mode
 
@@ -52,5 +53,7 @@ Web console actions now execute real operations:
 - Telegram test sends a real bot message
 - Domain issue / renew call `cert-master-sync.sh` for the selected domain
 - Domain sync exports the current local certificate and uploads it to WebDAV
+
+The backend image now bundles `acme.sh` under `/opt/acme.sh`. If the configured ACME Home is empty, the backend and shell script will automatically seed it from the bundled copy before running.
 
 The only remaining metadata-only action is node-side `Run Now`, because the node agent pull/command queue is not wired into the Web backend yet.
