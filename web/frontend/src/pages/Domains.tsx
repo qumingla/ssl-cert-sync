@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Domain, DnsChannel } from "../types/api";
 import { Button } from "../components/ui/button";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Label } from "../components/ui/label";
-import { MoreHorizontal, Plus, RefreshCw, UploadCloud, Trash, Play, Pencil } from "lucide-react";
+import { CheckSquare, MoreHorizontal, Plus, RefreshCw, UploadCloud, Trash, Play, Pencil } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { format } from "date-fns";
 import { toast } from "sonner";
@@ -40,6 +40,9 @@ export function Domains() {
   }), [t]);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const { data: domains = [], isLoading } = useQuery<Domain[]>({
     queryKey: ['domains'],
@@ -100,6 +103,57 @@ export function Domains() {
     onError: (err: unknown) => toast.error((err as Error).message || t("domains.actionFailed"))
   });
 
+  const bulkActionMutation = useMutation({
+    mutationFn: async ({ ids, action }: { ids: string[]; action: 'issue' | 'renew' | 'sync' | 'enable' | 'disable' | 'delete' }) => {
+      for (const id of ids) {
+        if (action === 'enable' || action === 'disable') {
+          await api.patch(`/admin/domains/${id}`, { enabled: action === 'enable' });
+          continue;
+        }
+        if (action === 'delete') {
+          await api.delete(`/admin/domains/${id}`);
+          continue;
+        }
+        await api.post(`/admin/domains/${id}/${action}`);
+      }
+    },
+    onSuccess: (_, { action, ids }) => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
+      queryClient.invalidateQueries({ queryKey: ['overview'] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      setSelectedIds([]);
+      setBulkDeleteOpen(false);
+      if (action === 'enable' || action === 'disable') {
+        toast.success(t("domains.bulkStatusUpdated", { count: ids.length }));
+      } else if (action === 'delete') {
+        toast.success(t("domains.bulkDeleted", { count: ids.length }));
+      } else {
+        toast.success(t("domains.bulkStartedAction", { count: ids.length, action: jobTypeLabel(action) }));
+      }
+    },
+    onError: (err: unknown, { action }) => {
+      if (action === 'delete') {
+        toast.error((err as Error).message || t("domains.bulkDeleteFailed"));
+      } else {
+        toast.error((err as Error).message || t("domains.bulkActionFailed"));
+      }
+    }
+  });
+
+  const effectiveSelectedIds = useMemo(
+    () => selectedIds.filter((id) => domains.some((domain) => domain.id === id)),
+    [domains, selectedIds]
+  );
+
+  useEffect(() => {
+    if (!selectAllRef.current) {
+      return;
+    }
+    const total = domains.length;
+    const selected = effectiveSelectedIds.length;
+    selectAllRef.current.indeterminate = selected > 0 && selected < total;
+  }, [domains.length, effectiveSelectedIds]);
+
   const onSubmit = (values: FormValues) => {
     saveMutation.mutate(values);
   };
@@ -117,6 +171,24 @@ export function Domains() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success(t("domains.shaCopied"));
+  };
+
+  const isAllSelected = domains.length > 0 && effectiveSelectedIds.length === domains.length;
+  const hasSelection = effectiveSelectedIds.length > 0;
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(isAllSelected ? [] : domains.map((domain) => domain.id));
+  };
+
+  const runBulkAction = (action: 'issue' | 'renew' | 'sync' | 'enable' | 'disable') => {
+    if (!effectiveSelectedIds.length) {
+      return;
+    }
+    bulkActionMutation.mutate({ ids: effectiveSelectedIds, action });
   };
 
   const renderSha = (sha: string | null) => {
@@ -139,17 +211,69 @@ export function Domains() {
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
         <h1 className="text-2xl font-bold tracking-tight">{t("domains.title")}</h1>
-        <Button className="w-full sm:w-auto" onClick={() => { form.reset({ id: undefined, domain: "", dnsChannelId: "", enabled: true }); setIsAddOpen(true); }}>
-          <Plus className="mr-2 h-4 w-4" /> {t("domains.add")}
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <DropdownMenu>
+            <DropdownMenuTrigger>
+              <Button className="w-full sm:w-auto" variant="outline" disabled={!hasSelection || bulkActionMutation.isPending}>
+                <CheckSquare className="mr-2 h-4 w-4" />
+                {t("domains.bulkActions")}
+                {hasSelection ? ` (${effectiveSelectedIds.length})` : ""}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => runBulkAction('issue')}>
+                <Play className="mr-2 h-4 w-4" /> {t("domains.bulkIssue")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runBulkAction('renew')}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {t("domains.bulkRenew")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runBulkAction('sync')}>
+                <UploadCloud className="mr-2 h-4 w-4" /> {t("domains.bulkSync")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runBulkAction('enable')}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {t("domains.bulkEnable")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runBulkAction('disable')}>
+                <RefreshCw className="mr-2 h-4 w-4" /> {t("domains.bulkDisable")}
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setBulkDeleteOpen(true)}>
+                <Trash className="mr-2 h-4 w-4" /> {t("domains.bulkDelete")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button className="w-full sm:w-auto" onClick={() => { form.reset({ id: undefined, domain: "", dnsChannelId: "", enabled: true }); setIsAddOpen(true); }}>
+            <Plus className="mr-2 h-4 w-4" /> {t("domains.add")}
+          </Button>
+        </div>
       </div>
+
+      {hasSelection ? (
+        <div className="flex flex-col gap-2 rounded-lg border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            {t("domains.selectedCount", { count: effectiveSelectedIds.length })}
+          </p>
+          <Button variant="ghost" size="sm" className="w-full sm:w-auto" onClick={() => setSelectedIds([])}>
+            {t("domains.clearSelection")}
+          </Button>
+        </div>
+      ) : null}
 
       <Card>
         <CardContent className="p-0">
           <div className="w-full overflow-x-auto">
-            <Table className="min-w-[800px]">
+            <Table className="min-w-[860px]">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[44px]">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    aria-label={t("domains.selectAll")}
+                    checked={isAllSelected}
+                    onChange={toggleSelectAll}
+                    className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                  />
+                </TableHead>
                 <TableHead>{t("table.domain")}</TableHead>
                 <TableHead>{t("table.status")}</TableHead>
                 <TableHead>{t("table.dnsChannel")}</TableHead>
@@ -162,12 +286,21 @@ export function Domains() {
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={8} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
               ) : domains.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">{t("domains.empty")}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">{t("domains.empty")}</TableCell></TableRow>
               ) : (
                 domains.map((d) => (
                   <TableRow key={d.id} className={!d.enabled ? "opacity-50 grayscale" : ""}>
+                    <TableCell>
+                        <input
+                          type="checkbox"
+                          aria-label={t("domains.selectOne", { domain: d.domain })}
+                          checked={effectiveSelectedIds.includes(d.id)}
+                          onChange={() => toggleSelected(d.id)}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                        />
+                    </TableCell>
                     <TableCell className="font-medium">{d.domain}</TableCell>
                     <TableCell>
                       {!d.enabled ? <Badge variant="outline">{t("common.disabled")}</Badge> : (
@@ -291,6 +424,23 @@ export function Domains() {
             <Button variant="outline" onClick={() => setDeleteId(null)}>{t("common.cancel")}</Button>
             <Button variant="destructive" onClick={() => deleteId && deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
               {deleteMutation.isPending ? t("common.deleting") : t("common.delete")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteOpen} onOpenChange={(open) => !open && !bulkActionMutation.isPending && setBulkDeleteOpen(false)}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t("domains.bulkDeleteTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("domains.bulkDeleteDescription", { count: effectiveSelectedIds.length })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteOpen(false)} disabled={bulkActionMutation.isPending}>{t("common.cancel")}</Button>
+            <Button variant="destructive" onClick={() => bulkActionMutation.mutate({ ids: effectiveSelectedIds, action: 'delete' })} disabled={bulkActionMutation.isPending || !hasSelection}>
+                {bulkActionMutation.isPending ? t("common.deleting") : t("domains.bulkDelete")}
             </Button>
           </DialogFooter>
         </DialogContent>
