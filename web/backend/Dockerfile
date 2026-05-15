@@ -13,10 +13,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SSL_SYNC_FRONTEND_DIST=/app/frontend-dist
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash curl openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY web/backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY web/backend/app /app/app
+COPY cert-master-sync.sh /usr/local/bin/cert-master-sync.sh
+RUN chmod 750 /usr/local/bin/cert-master-sync.sh
 COPY --from=frontend /src/web/frontend/dist /app/frontend-dist
 
 EXPOSE 8080

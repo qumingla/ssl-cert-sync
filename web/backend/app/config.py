@@ -5,24 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class AppConfig:
     data_dir: Path
     db_path: Path
     log_dir: Path
+    runtime_config_dir: Path
+    runtime_tmp_dir: Path
     secret_key: str
     admin_username: str
     admin_password: str
     token_ttl_seconds: int
     frontend_dist: Path | None
-    enable_script_exec: bool
     master_script: Path
     allow_origins: list[str]
 
@@ -32,10 +26,14 @@ def load_config() -> AppConfig:
     default_data_dir = backend_root / ".data"
     default_log_dir = backend_root / ".logs"
     default_frontend_dist = _default_frontend_dist(backend_root)
+    default_runtime_config_dir = Path(os.getenv("SSL_SYNC_RUNTIME_CONFIG_DIR", "/etc/ssl-cert-sync")).expanduser()
+    default_runtime_tmp_dir = Path(os.getenv("SSL_SYNC_RUNTIME_TMP_DIR", "/tmp/ssl-sync-runtime")).expanduser()
 
     data_dir = Path(os.getenv("SSL_SYNC_DATA_DIR", str(default_data_dir))).expanduser()
     log_dir = Path(os.getenv("SSL_SYNC_LOG_DIR", str(default_log_dir))).expanduser()
     db_path = Path(os.getenv("SSL_SYNC_DB_PATH", str(data_dir / "ssl-sync.db"))).expanduser()
+    runtime_config_dir = Path(os.getenv("SSL_SYNC_RUNTIME_CONFIG_DIR", str(default_runtime_config_dir))).expanduser()
+    runtime_tmp_dir = Path(os.getenv("SSL_SYNC_RUNTIME_TMP_DIR", str(default_runtime_tmp_dir))).expanduser()
     frontend_dist_raw = os.getenv("SSL_SYNC_FRONTEND_DIST", str(default_frontend_dist))
     frontend_dist = Path(frontend_dist_raw).expanduser() if frontend_dist_raw else None
     origins = [
@@ -48,12 +46,13 @@ def load_config() -> AppConfig:
         data_dir=data_dir,
         db_path=db_path,
         log_dir=log_dir,
+        runtime_config_dir=runtime_config_dir,
+        runtime_tmp_dir=runtime_tmp_dir,
         secret_key=os.getenv("SSL_SYNC_SECRET_KEY", "change-me-before-production"),
         admin_username=os.getenv("SSL_SYNC_ADMIN_USERNAME", "admin"),
         admin_password=os.getenv("SSL_SYNC_ADMIN_PASSWORD", "admin"),
         token_ttl_seconds=int(os.getenv("SSL_SYNC_TOKEN_TTL_SECONDS", "86400")),
         frontend_dist=frontend_dist,
-        enable_script_exec=_bool_env("SSL_SYNC_ENABLE_SCRIPT_EXEC", False),
         master_script=Path(os.getenv("SSL_SYNC_MASTER_SCRIPT", "/usr/local/bin/cert-master-sync.sh")).expanduser(),
         allow_origins=origins,
     )

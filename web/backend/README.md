@@ -37,11 +37,20 @@ export SSL_SYNC_ADMIN_PASSWORD="change-this"
 | `SSL_SYNC_ADMIN_USERNAME` | `admin` | Admin login username |
 | `SSL_SYNC_ADMIN_PASSWORD` | `admin` | Admin login password |
 | `SSL_SYNC_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Dev CORS origins |
-| `SSL_SYNC_ENABLE_SCRIPT_EXEC` | `false` | Reserved switch for real script execution |
 | `SSL_SYNC_MASTER_SCRIPT` | `/usr/local/bin/cert-master-sync.sh` | Master sync script path |
+| `SSL_SYNC_RUNTIME_CONFIG_DIR` | `/etc/ssl-cert-sync` | Runtime-generated per-domain shell config directory |
+| `SSL_SYNC_RUNTIME_TMP_DIR` | `/tmp/ssl-sync-runtime` | Temporary workspace for DNS tests and staging files |
 
 ## Current Execution Mode
 
 The API is fully stateful and persists domains, DNS channels, nodes, assignments, jobs, and events in SQLite.
 
-Certificate issue/renew/sync actions currently run in safe metadata mode by default. This keeps the Web UI and backend state functional while avoiding accidental root-level certificate actions. The next integration step is to adapt `cert-master-sync.sh` to accept a domain argument and wire it behind `SSL_SYNC_ENABLE_SCRIPT_EXEC=1`.
+Web console actions now execute real operations:
+
+- DNS channel test runs a real `acme.sh --staging` DNS challenge against a bound domain
+- WebDAV test performs live `PUT` / `GET` / `DELETE` verification
+- Telegram test sends a real bot message
+- Domain issue / renew call `cert-master-sync.sh` for the selected domain
+- Domain sync exports the current local certificate and uploads it to WebDAV
+
+The only remaining metadata-only action is node-side `Run Now`, because the node agent pull/command queue is not wired into the Web backend yet.

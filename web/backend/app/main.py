@@ -17,6 +17,8 @@ def create_app() -> FastAPI:
     config = load_config()
     config.data_dir.mkdir(parents=True, exist_ok=True)
     config.log_dir.mkdir(parents=True, exist_ok=True)
+    config.runtime_config_dir.mkdir(parents=True, exist_ok=True)
+    config.runtime_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     db = Database(config.db_path)
     db.init()

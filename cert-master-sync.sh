@@ -12,8 +12,44 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# ── CLI 参数 ──────────────────────────────────────────────────────────────────
+CONFIG_FILE="${SSL_SYNC_CONFIG_FILE:-/etc/default/acme-master}"
+REQUESTED_DOMAIN=""
+DNS_TEST_ONLY=0
+TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-1}"
+CLI_FORCE_REISSUE=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --domain)
+            REQUESTED_DOMAIN="$2"
+            shift 2
+            ;;
+        --dns-test)
+            DNS_TEST_ONLY=1
+            TELEGRAM_ENABLED=0
+            shift
+            ;;
+        --no-telegram)
+            TELEGRAM_ENABLED=0
+            shift
+            ;;
+        --force-reissue)
+            CLI_FORCE_REISSUE=1
+            shift
+            ;;
+        *)
+            echo "[FATAL] 未知参数: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # ── 0. 加载配置 ───────────────────────────────────────────────────────────────
-CONFIG_FILE="/etc/default/acme-master"
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "[FATAL] 配置文件不存在: ${CONFIG_FILE}" >&2
     exit 1
@@ -21,12 +57,22 @@ fi
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"
 
+if [[ ${CLI_FORCE_REISSUE} -eq 1 ]]; then
+    FORCE_REISSUE="1"
+fi
+
 # 检查必要变量（CF 凭证二选一，不强制 :?）
-: "${TG_BOT_TOKEN:?}" "${TG_CHAT_ID:?}" \
-  "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}" \
-  "${ACME_HOME:=/root/.acme.sh}" \
+: "${ACME_HOME:=/root/.acme.sh}" \
   "${STAGING_BASE:=/tmp/acme_staging}" \
   "${LOG_FILE:=/var/log/cert-master-sync.log}"
+
+if [[ "${DNS_TEST_ONLY}" != "1" ]]; then
+    : "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+fi
+
+if [[ "${TELEGRAM_ENABLED}" == "1" ]]; then
+    : "${TG_BOT_TOKEN:?}" "${TG_CHAT_ID:?}"
+fi
 
 # 确保全局默认 DNS 插件已配置
 if [[ -z "${DNS_PROVIDER:-}" ]]; then
@@ -47,6 +93,10 @@ fi
 if [[ ${#DOMAINS[@]} -eq 0 ]]; then
     echo "[FATAL] 域名列表为空: 请在 DOMAINS 数组或 DOMAIN_DNS_PROVIDER 中至少填写一个域名" >&2
     exit 1
+fi
+
+if [[ -n "${REQUESTED_DOMAIN}" ]]; then
+    DOMAINS=("${REQUESTED_DOMAIN}")
 fi
 
 # ── 1. 日志函数 ───────────────────────────────────────────────────────────────
@@ -70,6 +120,11 @@ html_escape() {
 
 # 用法: send_tg_msg "❤️ 标题" "正文"
 send_tg_msg() {
+    if [[ "${TELEGRAM_ENABLED}" != "1" ]]; then
+        log "INFO" "TG 已禁用，跳过通知: $1"
+        return 0
+    fi
+
     local title="$1"
     local body="${2:-}"
 
@@ -233,7 +288,7 @@ process_domain() {
         "${ACME_HOME}/${domain}/fullchain.cer"; do
         [[ -f "${_f}" ]] && { acme_cert="${_f}"; break; }
     done
-    if [[ -n "${acme_cert}" ]]; then
+    if [[ "${DNS_TEST_ONLY}" != "1" && -z "${FORCE_REISSUE:-}" && -n "${acme_cert}" ]]; then
         local expire_epoch now_epoch days_left
         expire_epoch=$(openssl x509 -noout -enddate -in "${acme_cert}" 2>/dev/null \
             | cut -d= -f2 | xargs -I{} date -d '{}' '+%s' 2>/dev/null || echo 0)
@@ -261,9 +316,14 @@ process_domain() {
 
     local acme_bin="${ACME_HOME}/acme.sh"
     local acme_log="${staging_dir}/acme_issue.log"
+    local acme_stage_flag=""
+    if [[ "${DNS_TEST_ONLY}" == "1" ]]; then
+        acme_stage_flag="--staging"
+    fi
 
     "${acme_bin}" \
         --issue \
+        ${acme_stage_flag:+${acme_stage_flag}} \
         ${FORCE_REISSUE:+--force} \
         --dns "${dns_plugin}" \
         -d "*.${domain}" \
@@ -285,6 +345,12 @@ process_domain() {
             return 1
         fi
     }
+
+    if [[ "${DNS_TEST_ONLY}" == "1" ]]; then
+        log "INFO" "[${domain}] ✅ DNS API 实测通过（acme.sh staging）"
+        find "${staging_dir}" -type f -exec shred -u {} \; 2>/dev/null || rm -f "${staging_dir}"/* 2>/dev/null || true
+        return 0
+    fi
 
     # 6b. 提取证书
     local key_file="${staging_dir}/privkey.pem"

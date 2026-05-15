@@ -95,7 +95,7 @@ docker compose up -d --build
 http://<master-ip>:8080
 ```
 
-> 当前后端默认运行在安全元数据模式：Web UI 的申请/续签/同步会写入 SQLite 状态和任务日志，但不会直接执行 acme.sh。后续会在 `cert-master-sync.sh` 支持单域名参数后，通过 `SSL_SYNC_ENABLE_SCRIPT_EXEC=1` 接入真实脚本执行。
+> 当前 Web 控制台已经接通真实执行链路：DNS 渠道测试会发起真实 `acme.sh --staging` 验证，WebDAV 测试会执行真实 `PUT/GET/DELETE`，Telegram 测试会真实发消息，域名的申请/续签/同步会调用 `cert-master-sync.sh` 或导出本地证书后上传 WebDAV。当前仅 Node 的 `Run Now` 仍是元数据动作，等待 node 命令队列接入。
 
 ## 🌐 多 DNS 供应商支持
 

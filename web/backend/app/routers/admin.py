@@ -2,19 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
-from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from ..config import AppConfig
 from ..db import Database, dumps, loads_object
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
 from ..jobs import append_log, create_job, finish_job, get_job, job_from_row
+from ..live_ops import (
+    cleanup_bundle,
+    extract_domain_bundle,
+    mark_domain_error,
+    run_domain_script,
+    test_dns_channel_live,
+    update_domain_state,
+    upload_domain_bundle,
+    webdav_probe,
+)
 from ..schemas import (
     AssignmentUpdate,
     DnsChannelCreate,
@@ -30,7 +37,7 @@ from ..schemas import (
 from ..security import hash_secret, new_node_token, require_admin
 from ..serializers import public_assignment, public_dns_channel, public_domain, public_node
 from ..telegram import send_telegram_message
-from ..timeutil import iso_now, to_iso, utc_now
+from ..timeutil import iso_now
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -145,14 +152,34 @@ async def run_domain_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Domain not found"})
     job = create_job(db, event_hub, action, domain_id, row["domain"])
     append_log(db, job["id"], f"[INFO] Requested {action} for {row['domain']}")
-    _apply_safe_domain_action(request.app.state.config, db, job["id"], domain_id, action)
-    event_hub.publish(
-        "deploy_success" if action == "sync" else "job_finished",
-        "success",
-        f"{action} completed for {row['domain']}",
-        {"jobId": job["id"], "domainId": domain_id},
-    )
-    return finish_job(db, event_hub, job["id"])
+    bundle = None
+    try:
+        if action == "sync":
+            bundle = extract_domain_bundle(_settings(db), row["domain"])
+            append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {row['domain']}")
+            upload_domain_bundle(_settings(db).get("webdav", {}), row["domain"], bundle)
+            append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {row['domain']}")
+            update_domain_state(db, domain_id, bundle, mark_synced=True)
+        else:
+            bundle = await run_domain_script(
+                request.app.state.config,
+                db,
+                domain_id,
+                force_reissue=True,
+                line_logger=lambda line: append_log(db, job["id"], line),
+            )
+            update_domain_state(db, domain_id, bundle, mark_issued=True, mark_synced=True)
+
+        append_log(db, job["id"], f"[INFO] Real {action} execution completed for {row['domain']}")
+        return finish_job(db, event_hub, job["id"])
+    except Exception as exc:
+        error_message = str(exc)
+        mark_domain_error(db, domain_id, error_message)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
+    finally:
+        cleanup_bundle(bundle)
 
 
 @router.get("/dns-channels")
@@ -216,6 +243,7 @@ async def delete_dns_channel(channel_id: str, db: Database = Depends(get_db)) ->
 @router.post("/dns-channels/{channel_id}/test")
 async def test_dns_channel(
     channel_id: str,
+    request: Request,
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, bool]:
@@ -223,9 +251,27 @@ async def test_dns_channel(
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "DNS channel not found"})
     job = create_job(db, event_hub, "test_dns", channel_id, channel["name"])
-    append_log(db, job["id"], "[INFO] DNS credential shape validated. Live acme.sh validation is not executed by default.")
-    finish_job(db, event_hub, job["id"])
-    return {"success": True}
+    try:
+        append_log(db, job["id"], f"[INFO] Running live DNS challenge test for channel {channel['name']}")
+        await test_dns_channel_live(
+            request.app.state.config,
+            db,
+            channel_id,
+            line_logger=lambda line: append_log(db, job["id"], line),
+        )
+        append_log(db, job["id"], "[INFO] DNS challenge test passed")
+        finish_job(db, event_hub, job["id"])
+        return {"success": True}
+    except ValueError as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message}) from exc
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
 
 
 @router.get("/nodes")
@@ -395,9 +441,21 @@ async def test_webdav(
     job = create_job(db, event_hub, "sync", "settings", "WebDAV")
     url = settings.get("url") or "(empty)"
     append_log(db, job["id"], f"[INFO] WebDAV URL configured as: {url}")
-    append_log(db, job["id"], "[INFO] Live WebDAV request is intentionally disabled in this backend baseline.")
-    finish_job(db, event_hub, job["id"])
-    return {"success": True}
+    try:
+        await asyncio.to_thread(webdav_probe, settings)
+        append_log(db, job["id"], "[INFO] Live WebDAV probe completed successfully")
+        finish_job(db, event_hub, job["id"])
+        return {"success": True}
+    except ValueError as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message}) from exc
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
 
 
 @router.post("/settings/telegram/test")
@@ -489,37 +547,3 @@ def _node_detail(db: Database, event_hub: EventHub, node_id: str) -> dict[str, A
         if event.get("payload", {}).get("nodeId") == node_id
     ][:10]
     return node
-
-
-def _apply_safe_domain_action(config: AppConfig, db: Database, job_id: str, domain_id: str, action: str) -> None:
-    now = iso_now()
-    if config.enable_script_exec:
-        append_log(db, job_id, f"[INFO] Script execution requested via {config.master_script}.")
-        append_log(db, job_id, "[WARN] Per-domain script execution is not enabled until cert-master-sync.sh supports a domain argument.")
-    else:
-        append_log(db, job_id, "[INFO] Safe metadata mode: set SSL_SYNC_ENABLE_SCRIPT_EXEC=1 after reviewing script integration.")
-
-    if action in {"issue", "renew"}:
-        expires = to_iso(utc_now() + timedelta(days=90))
-        fake_sha = secrets.token_hex(32)
-        db.execute(
-            """
-            UPDATE domains
-            SET cert_sha256 = ?, expires_at = ?, last_issued_at = ?, status = 'active', updated_at = ?
-            WHERE id = ?
-            """,
-            (fake_sha, expires, now, now, domain_id),
-        )
-        db.execute(
-            """
-            UPDATE node_assignments
-            SET desired_sha256 = ?, expires_at = ?, status = CASE WHEN deployed_sha256 = ? THEN 'synced' ELSE 'pending' END, updated_at = ?
-            WHERE domain_id = ?
-            """,
-            (fake_sha, expires, fake_sha, now, domain_id),
-        )
-    if action == "sync":
-        db.execute(
-            "UPDATE domains SET last_sync_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, domain_id),
-        )
