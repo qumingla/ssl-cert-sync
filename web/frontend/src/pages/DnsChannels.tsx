@@ -14,13 +14,28 @@ import { toast } from "sonner";
 import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
 
-const PROVIDERS = [
-  { id: 'dns_cf', name: 'Cloudflare', fields: ['CF_Token', 'CF_Key', 'CF_Email'] },
-  { id: 'dns_ali', name: 'Aliyun', fields: ['Ali_Key', 'Ali_Secret'] },
-  { id: 'dns_tencent', name: 'Tencent Cloud', fields: ['Tencent_SecretId', 'Tencent_SecretKey'] },
-  { id: 'dns_dp', name: 'DNSPod', fields: ['DP_Id', 'DP_Key'] },
-  { id: 'dns_huaweicloud', name: 'Huawei Cloud', fields: ['HUAWEICLOUD_USERNAME', 'HUAWEICLOUD_PASSWORD', 'HUAWEICLOUD_DOMAIN_NAME'] },
-  { id: 'dns_gd', name: 'GoDaddy', fields: ['GD_Key', 'GD_Secret'] },
+type ProviderField = {
+  name: string;
+  optional?: boolean;
+  requiredOnCreate?: boolean;
+  hintKey?: 'dns.cfTokenHint' | 'dns.cfLegacyHint';
+};
+
+const PROVIDERS: Array<{ id: string; name: string; fields: ProviderField[] }> = [
+  {
+    id: 'dns_cf',
+    name: 'Cloudflare',
+    fields: [
+      { name: 'CF_Token', requiredOnCreate: false, hintKey: 'dns.cfTokenHint' },
+      { name: 'CF_Key', optional: true, hintKey: 'dns.cfLegacyHint' },
+      { name: 'CF_Email', optional: true, hintKey: 'dns.cfLegacyHint' },
+    ],
+  },
+  { id: 'dns_ali', name: 'Aliyun', fields: [{ name: 'Ali_Key' }, { name: 'Ali_Secret' }] },
+  { id: 'dns_tencent', name: 'Tencent Cloud', fields: [{ name: 'Tencent_SecretId' }, { name: 'Tencent_SecretKey' }] },
+  { id: 'dns_dp', name: 'DNSPod', fields: [{ name: 'DP_Id' }, { name: 'DP_Key' }] },
+  { id: 'dns_huaweicloud', name: 'Huawei Cloud', fields: [{ name: 'HUAWEICLOUD_USERNAME' }, { name: 'HUAWEICLOUD_PASSWORD' }, { name: 'HUAWEICLOUD_DOMAIN_NAME' }] },
+  { id: 'dns_gd', name: 'GoDaddy', fields: [{ name: 'GD_Key' }, { name: 'GD_Secret' }] },
   { id: 'custom', name: 'Custom', fields: [] }, // Custom uses dynamic field array
 ];
 
@@ -66,10 +81,14 @@ export function DnsChannels() {
 
       if (data.provider === 'custom') {
         data.customFields.forEach(f => {
-          if (f.key) payload.credentials[f.key] = f.value;
+          const key = f.key.trim();
+          const value = f.value.trim();
+          if (key && value) payload.credentials[key] = value;
         });
       } else {
-        payload.credentials = data.credentials;
+        payload.credentials = Object.fromEntries(
+          Object.entries(data.credentials).map(([key, value]) => [key, value.trim()]).filter(([, value]) => value !== '')
+        );
       }
       
       if (data.id) return api.patch(`/admin/dns-channels/${data.id}`, payload);
@@ -101,6 +120,36 @@ export function DnsChannels() {
   });
 
   const onSubmit = (values: FormValues) => {
+    const isEdit = Boolean(values.id);
+    const trimmedCredentials = Object.fromEntries(
+      Object.entries(values.credentials || {}).map(([key, value]) => [key, value.trim()])
+    );
+
+    if (!isEdit && values.provider === 'dns_cf') {
+      const hasToken = Boolean(trimmedCredentials.CF_Token);
+      const hasLegacyPair = Boolean(trimmedCredentials.CF_Key && trimmedCredentials.CF_Email);
+      if (!hasToken && !hasLegacyPair) {
+        toast.error(t("dns.cfValidation"));
+        return;
+      }
+    }
+
+    if (!isEdit && values.provider !== 'dns_cf' && values.provider !== 'custom') {
+      const missingField = selectedProviderInfo.fields.find((field) => (field.requiredOnCreate ?? !field.optional) && !trimmedCredentials[field.name]);
+      if (missingField) {
+        toast.error(t("dns.requiredField", { field: missingField.name }));
+        return;
+      }
+    }
+
+    if (!isEdit && values.provider === 'custom') {
+      const invalidCustomField = values.customFields.find((field) => field.key.trim() === '' || field.value.trim() === '');
+      if (invalidCustomField) {
+        toast.error(t("dns.customValidation"));
+        return;
+      }
+    }
+
     saveMutation.mutate(values);
   };
 
@@ -112,7 +161,7 @@ export function DnsChannels() {
     const creds: Record<string, string> = {};
     if (!isCustom) {
       const providerInfo = PROVIDERS.find(p => p.id === c.provider);
-      providerInfo?.fields.forEach(f => creds[f] = '');
+      providerInfo?.fields.forEach((field) => { creds[field.name] = ''; });
     }
 
     form.reset({
@@ -212,16 +261,20 @@ export function DnsChannels() {
                 {form.getValues('id') && <p className="text-xs text-muted-foreground">{t("dns.keepExisting")}</p>}
                 
                 {provider !== 'custom' ? (
-                  selectedProviderInfo.fields.map(field => (
-                    <div key={field} className="grid gap-2">
-                      <Label htmlFor={field}>{field}</Label>
+                  selectedProviderInfo.fields.map((field: ProviderField) => (
+                    <div key={field.name} className="grid gap-2">
+                      <Label htmlFor={field.name}>
+                        {field.name}
+                        {field.optional ? ` (${t("common.optional")})` : ''}
+                      </Label>
                       <Input 
-                        id={field} 
+                        id={field.name} 
                         type="password" 
-                        required={!form.getValues('id')} // Not required on edit
+                        required={!form.getValues('id') && (field.requiredOnCreate ?? !field.optional)}
                         placeholder={form.getValues('id') ? "********" : ""}
-                        {...form.register(`credentials.${field}`)} 
+                        {...form.register(`credentials.${field.name}`)} 
                       />
+                      {field.hintKey ? <p className="text-xs text-muted-foreground">{t(field.hintKey)}</p> : null}
                     </div>
                   ))
                 ) : (
