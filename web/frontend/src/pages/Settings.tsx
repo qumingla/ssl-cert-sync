@@ -45,13 +45,13 @@ export function Settings() {
   });
 
   const testWebDavMutation = useMutation({
-    mutationFn: () => api.post('/admin/settings/webdav/test'),
+    mutationFn: (payload: SettingsType["webdav"]) => api.post('/admin/settings/webdav/test', payload),
     onSuccess: () => toast.success(t("settings.webdavOk")),
     onError: (err: unknown) => toast.error(t("settings.webdavFailed", { message: (err as Error).message }))
   });
 
   const testTgMutation = useMutation({
-    mutationFn: () => api.post('/admin/settings/telegram/test'),
+    mutationFn: (payload: SettingsType["telegram"]) => api.post('/admin/settings/telegram/test', payload),
     onSuccess: () => toast.success(t("settings.telegramOk")),
     onError: (err: unknown) => toast.error(t("settings.telegramFailed", { message: (err as Error).message }))
   });
@@ -105,7 +105,7 @@ export function Settings() {
             </div>
           </CardContent>
           <CardFooter className="flex flex-col sm:flex-row justify-between gap-2">
-            <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={() => testWebDavMutation.mutate()} disabled={testWebDavMutation.isPending}>
+            <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={() => testWebDavMutation.mutate(form.getValues("webdav"))} disabled={testWebDavMutation.isPending}>
               {testWebDavMutation.isPending ? t("common.testing") : t("settings.testConnection")}
             </Button>
           </CardFooter>
@@ -127,7 +127,7 @@ export function Settings() {
             </div>
           </CardContent>
           <CardFooter className="flex flex-col sm:flex-row justify-between gap-2">
-            <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={() => testTgMutation.mutate()} disabled={testTgMutation.isPending}>
+            <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={() => testTgMutation.mutate(form.getValues("telegram"))} disabled={testTgMutation.isPending}>
               {testTgMutation.isPending ? t("common.testing") : t("settings.testNotification")}
             </Button>
           </CardFooter>

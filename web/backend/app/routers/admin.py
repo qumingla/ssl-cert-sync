@@ -24,9 +24,12 @@ from ..schemas import (
     NodeCreate,
     NodePatch,
     SettingsPayload,
+    TelegramSettings,
+    WebDavSettings,
 )
 from ..security import hash_secret, new_node_token, require_admin
 from ..serializers import public_assignment, public_dns_channel, public_domain, public_node
+from ..telegram import send_telegram_message
 from ..timeutil import iso_now, to_iso, utc_now
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -383,10 +386,14 @@ async def patch_settings(payload: SettingsPayload, db: Database = Depends(get_db
 
 
 @router.post("/settings/webdav/test")
-async def test_webdav(db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, bool]:
-    settings = _settings(db)
+async def test_webdav(
+    payload: WebDavSettings | None = None,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    settings = payload.model_dump() if payload is not None else _settings(db).get("webdav", {})
     job = create_job(db, event_hub, "sync", "settings", "WebDAV")
-    url = settings["webdav"].get("url") or "(empty)"
+    url = settings.get("url") or "(empty)"
     append_log(db, job["id"], f"[INFO] WebDAV URL configured as: {url}")
     append_log(db, job["id"], "[INFO] Live WebDAV request is intentionally disabled in this backend baseline.")
     finish_job(db, event_hub, job["id"])
@@ -394,9 +401,43 @@ async def test_webdav(db: Database = Depends(get_db), event_hub: EventHub = Depe
 
 
 @router.post("/settings/telegram/test")
-async def test_telegram(db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, bool]:
+async def test_telegram(
+    payload: TelegramSettings | None = None,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    telegram_settings = payload.model_dump() if payload is not None else _settings(db).get("telegram", {})
     job = create_job(db, event_hub, "sync", "settings", "Telegram")
-    append_log(db, job["id"], "[INFO] Telegram settings accepted. Live notification is intentionally disabled in this backend baseline.")
+    bot_token = str(telegram_settings.get("botToken") or "").strip()
+    chat_id = str(telegram_settings.get("chatId") or "").strip()
+
+    if not bot_token or not chat_id:
+        error_message = "Telegram Bot Token or Chat ID is empty"
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message})
+
+    append_log(db, job["id"], f"[INFO] Sending test message to chat {chat_id}")
+
+    try:
+        response = await asyncio.to_thread(
+            send_telegram_message,
+            bot_token,
+            chat_id,
+            "SSL Sync Master 测试消息：Telegram 推送已连接。",
+        )
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
+
+    message_id = (
+        response.get("result", {}).get("message_id")
+        if isinstance(response.get("result"), dict)
+        else None
+    )
+    append_log(db, job["id"], f"[INFO] Telegram message sent successfully. message_id={message_id or '(unknown)'}")
     finish_job(db, event_hub, job["id"])
     return {"success": True}
 
