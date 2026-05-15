@@ -352,6 +352,73 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     }
 
     // Settings
+    if (url.endsWith('/api/admin/backup') && method === 'GET') {
+      return createResponse({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        settings,
+        dnsChannels: channels.map((channel) => ({ ...channel, updatedAt: channel.createdAt })),
+        domains: domains.map((domain) => ({
+          ...domain,
+          lastError: null,
+          createdAt: domain.lastIssuedAt ?? new Date().toISOString(),
+          updatedAt: domain.lastSyncAt ?? new Date().toISOString(),
+        })),
+        nodes: nodes.map((node) => ({
+          id: node.id,
+          name: node.name,
+          ip: node.ip,
+          isOnline: node.isOnline,
+          lastHeartbeatAt: node.lastHeartbeatAt,
+          certDir: node.certDir,
+          lastError: node.lastError,
+          tokenHash: `mock-hash-${node.id}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })),
+        assignments: nodeAssignments.map((assignment) => ({
+          ...assignment,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })),
+      });
+    }
+    if (url.endsWith('/api/admin/backup/restore') && method === 'POST') {
+      const body = getBody() as {
+        settings: Settings;
+        dnsChannels: DnsChannel[];
+        domains: Domain[];
+        nodes: Array<{ id: string; name: string; ip: string; isOnline: boolean; lastHeartbeatAt: string | null; certDir: string; lastError: string | null }>;
+        assignments: NodeAssignment[];
+      };
+      settings = body.settings;
+      channels = body.dnsChannels.map((channel) => ({
+        id: channel.id,
+        name: channel.name,
+        provider: channel.provider,
+        credentials: channel.credentials,
+        createdAt: channel.createdAt,
+      }));
+      domains = body.domains;
+      nodeAssignments = body.assignments;
+      nodes = body.nodes.map((node) => ({
+        id: node.id,
+        name: node.name,
+        ip: node.ip,
+        isOnline: node.isOnline,
+        lastHeartbeatAt: node.lastHeartbeatAt,
+        certDir: node.certDir,
+        assignedDomainsCount: nodeAssignments.filter((item) => item.nodeId === node.id).length,
+        lastError: node.lastError,
+      }));
+      emitMockEvent({
+        type: 'job_finished',
+        level: 'warning',
+        message: 'Configuration restored from backup',
+        payload: { restored: true }
+      });
+      return createResponse({ success: true });
+    }
     if (url.endsWith('/api/admin/settings')) {
       if (method === 'GET') return createResponse(settings);
       if (method === 'PATCH') {

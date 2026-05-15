@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from ..db import Database, dumps, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
@@ -24,6 +25,7 @@ from ..live_ops import (
 )
 from ..schemas import (
     AssignmentUpdate,
+    BackupPayload,
     DnsChannelCreate,
     DnsChannelPatch,
     DomainCreate,
@@ -429,6 +431,206 @@ async def patch_settings(payload: SettingsPayload, db: Database = Depends(get_db
         (dumps(payload.model_dump()), now),
     )
     return _settings(db)
+
+
+@router.get("/backup")
+async def download_backup(db: Database = Depends(get_db)) -> Response:
+    exported_at = iso_now()
+    payload = {
+        "version": 1,
+        "exportedAt": exported_at,
+        "settings": _settings(db),
+        "dnsChannels": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "provider": row["provider"],
+                "credentials": loads_object(row.get("credentials_json")),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM dns_channels ORDER BY name")
+        ],
+        "domains": [
+            {
+                "id": row["id"],
+                "domain": row["domain"],
+                "enabled": bool(row["enabled"]),
+                "dnsChannelId": row["dns_channel_id"],
+                "expiresAt": row.get("expires_at"),
+                "lastIssuedAt": row.get("last_issued_at"),
+                "lastSyncAt": row.get("last_sync_at"),
+                "certSha256": row.get("cert_sha256"),
+                "status": row.get("status") or "pending",
+                "lastError": row.get("last_error"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM domains ORDER BY domain")
+        ],
+        "nodes": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "ip": row.get("ip") or "",
+                "isOnline": bool(row.get("is_online")),
+                "lastHeartbeatAt": row.get("last_heartbeat_at"),
+                "certDir": row.get("cert_dir") or "/etc/nginx/ssl",
+                "lastError": row.get("last_error"),
+                "tokenHash": row["token_hash"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM nodes ORDER BY name")
+        ],
+        "assignments": [
+            {
+                "id": row["id"],
+                "nodeId": row["node_id"],
+                "domainId": row["domain_id"],
+                "desiredSha256": row.get("desired_sha256"),
+                "deployedSha256": row.get("deployed_sha256"),
+                "status": row.get("status") or "pending",
+                "lastDeployAt": row.get("last_deploy_at"),
+                "expiresAt": row.get("expires_at"),
+                "lastError": row.get("last_error"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM node_assignments ORDER BY node_id, domain_id")
+        ],
+    }
+    filename = f"ssl-sync-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/backup/restore")
+async def restore_backup(
+    payload: BackupPayload,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    if payload.version != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": f"Unsupported backup version: {payload.version}"})
+
+    now = iso_now()
+    try:
+        with db.connect() as conn:
+            conn.execute("DELETE FROM jobs")
+            conn.execute("DELETE FROM events")
+            conn.execute("DELETE FROM node_assignments")
+            conn.execute("DELETE FROM nodes")
+            conn.execute("DELETE FROM domains")
+            conn.execute("DELETE FROM dns_channels")
+            conn.execute(
+                "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'settings'",
+                (dumps(payload.settings.model_dump()), now),
+            )
+            conn.executemany(
+                """
+                INSERT INTO dns_channels (id, name, provider, credentials_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.name,
+                        item.provider,
+                        dumps(item.credentials),
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.dnsChannels
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO domains
+                    (id, domain, enabled, dns_channel_id, expires_at, last_issued_at, last_sync_at, cert_sha256, status, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.domain,
+                        int(item.enabled),
+                        item.dnsChannelId,
+                        item.expiresAt,
+                        item.lastIssuedAt,
+                        item.lastSyncAt,
+                        item.certSha256,
+                        item.status,
+                        item.lastError,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.domains
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO nodes
+                    (id, name, ip, is_online, last_heartbeat_at, cert_dir, last_error, token_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.name,
+                        item.ip,
+                        int(item.isOnline),
+                        item.lastHeartbeatAt,
+                        item.certDir,
+                        item.lastError,
+                        item.tokenHash,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.nodes
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO node_assignments
+                    (id, node_id, domain_id, desired_sha256, deployed_sha256, status, last_deploy_at, expires_at, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.nodeId,
+                        item.domainId,
+                        item.desiredSha256,
+                        item.deployedSha256,
+                        item.status,
+                        item.lastDeployAt,
+                        item.expiresAt,
+                        item.lastError,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.assignments
+                ],
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": f"Failed to restore backup: {exc}"}) from exc
+
+    event_hub.publish(
+        "job_finished",
+        "warning",
+        "Configuration restored from backup",
+        {
+            "dnsChannels": len(payload.dnsChannels),
+            "domains": len(payload.domains),
+            "nodes": len(payload.nodes),
+            "assignments": len(payload.assignments),
+        },
+    )
+    return {"success": True}
 
 
 @router.post("/settings/webdav/test")

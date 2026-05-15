@@ -1,20 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { Settings as SettingsType } from "../types/api";
+import type { BackupPayload, Settings as SettingsType } from "../types/api";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "sonner";
 import { useForm, useWatch } from "react-hook-form";
-import { useEffect } from "react";
-import { Save, Bell, HardDrive, Terminal, Languages } from "lucide-react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Save, Bell, HardDrive, Terminal, Languages, Download, Upload } from "lucide-react";
 import { type Language, useI18n } from "../components/LocaleProvider";
 
 export function Settings() {
   const queryClient = useQueryClient();
   const { language, setLanguage, t } = useI18n();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{ fileName: string; payload: BackupPayload } | null>(null);
 
   const { data: settings, isLoading } = useQuery<SettingsType>({
     queryKey: ['settings'],
@@ -58,8 +61,81 @@ export function Settings() {
     onError: (err: unknown) => toast.error(t("settings.telegramFailed", { message: (err as Error).message }))
   });
 
+  const restoreMutation = useMutation({
+    mutationFn: (payload: BackupPayload) => api.post('/admin/backup/restore', payload),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries();
+      toast.success(t("settings.restoreSuccess"));
+      setPendingRestore(null);
+    },
+    onError: (err: unknown) => toast.error(t("settings.restoreFailed", { message: (err as Error).message }))
+  });
+
   const onSubmit = (values: SettingsType) => {
     updateMutation.mutate(values);
+  };
+
+  const downloadBackup = async () => {
+    try {
+      const { blob, fileName } = await api.downloadJson('/admin/backup');
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = fileName || `ssl-sync-backup-${new Date().toISOString().replaceAll(':', '-')}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+      toast.success(t("settings.backupDownloaded"));
+    } catch (err) {
+      toast.error(t("settings.backupDownloadFailed", { message: (err as Error).message }));
+    }
+  };
+
+  const onPickRestoreFile = () => {
+    fileInputRef.current?.click();
+  };
+
+  const onRestoreFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as BackupPayload;
+      if (!parsed || typeof parsed !== "object" || !parsed.settings || !Array.isArray(parsed.dnsChannels)) {
+        throw new Error(t("settings.invalidBackup"));
+      }
+      setPendingRestore({ fileName: file.name, payload: parsed });
+    } catch (err) {
+      toast.error(t("settings.restoreParseFailed", { message: (err as Error).message }));
+      event.target.value = "";
+    }
+  };
+
+  const confirmRestore = () => {
+    if (!pendingRestore) {
+      return;
+    }
+    restoreMutation.mutate(pendingRestore.payload, {
+      onSuccess: () => {
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+      },
+    });
+  };
+
+  const closeRestoreDialog = () => {
+    if (restoreMutation.isPending) {
+      return;
+    }
+    setPendingRestore(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   if (isLoading) return <div className="p-8">{t("common.loading")}</div>;
@@ -88,6 +164,31 @@ export function Settings() {
           </Select>
           <p className="text-sm text-muted-foreground">{t("settings.languageDescription")}</p>
         </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><HardDrive className="h-5 w-5" /> {t("settings.backup")}</CardTitle>
+          <CardDescription>{t("settings.backupDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={onRestoreFileChange}
+          />
+          <p className="text-sm text-muted-foreground">{t("settings.backupHint")}</p>
+        </CardContent>
+        <CardFooter className="flex flex-col sm:flex-row justify-between gap-2">
+          <Button className="w-full sm:w-auto" variant="outline" type="button" onClick={downloadBackup}>
+            <Download className="mr-2 h-4 w-4" /> {t("settings.downloadBackup")}
+          </Button>
+          <Button className="w-full sm:w-auto" type="button" onClick={onPickRestoreFile}>
+            <Upload className="mr-2 h-4 w-4" /> {t("settings.restoreBackup")}
+          </Button>
+        </CardFooter>
       </Card>
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -176,6 +277,31 @@ export function Settings() {
           </Button>
         </div>
       </form>
+
+      <Dialog open={!!pendingRestore} onOpenChange={(open) => !open && closeRestoreDialog()}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t("settings.restoreTitle")}</DialogTitle>
+            <DialogDescription>
+              {pendingRestore
+                ? t("settings.restoreDescription", { fileName: pendingRestore.fileName })
+                : t("settings.restoreDescriptionFallback")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>{t("settings.restoreIncludes")}</p>
+            <p>{t("settings.restoreWarning")}</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={closeRestoreDialog} disabled={restoreMutation.isPending}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="button" onClick={confirmRestore} disabled={restoreMutation.isPending}>
+              {restoreMutation.isPending ? t("settings.restoring") : t("settings.confirmRestore")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

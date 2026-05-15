@@ -73,6 +73,67 @@ class SettingsPayload(BaseModel):
     acme: AcmeSettings
 
 
+class BackupDnsChannel(BaseModel):
+    id: str
+    name: str
+    provider: str
+    credentials: dict[str, str] = Field(default_factory=dict)
+    createdAt: str
+    updatedAt: str
+
+
+class BackupDomain(BaseModel):
+    id: str
+    domain: str
+    enabled: bool = True
+    dnsChannelId: str
+    expiresAt: str | None = None
+    lastIssuedAt: str | None = None
+    lastSyncAt: str | None = None
+    certSha256: str | None = None
+    status: str = "pending"
+    lastError: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class BackupNode(BaseModel):
+    id: str
+    name: str
+    ip: str = ""
+    isOnline: bool = False
+    lastHeartbeatAt: str | None = None
+    certDir: str = "/etc/nginx/ssl"
+    lastError: str | None = None
+    tokenHash: str
+    createdAt: str
+    updatedAt: str
+
+
+class BackupAssignment(BaseModel):
+    id: str
+    nodeId: str
+    domainId: str
+    desiredSha256: str | None = None
+    deployedSha256: str | None = None
+    status: str = "pending"
+    lastDeployAt: str | None = None
+    expiresAt: str | None = None
+    lastError: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class BackupPayload(BaseModel):
+    version: int = 1
+    exportedAt: str
+    settings: SettingsPayload
+    dnsChannels: list[BackupDnsChannel] = Field(default_factory=list)
+    domains: list[BackupDomain] = Field(default_factory=list)
+    nodes: list[BackupNode] = Field(default_factory=list)
+    assignments: list[BackupAssignment] = Field(default_factory=list)
+
+
 class NodeHeartbeat(BaseModel):
     hostname: str | None = None
     ip: str | None = None

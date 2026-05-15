@@ -12,12 +12,29 @@ export class ApiClientError extends Error {
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const response = await requestRaw(endpoint, options);
+
+  // Handle empty responses
+  const text = await response.text();
+  if (!text) return {} as T;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {} as T;
+  }
+}
+
+async function requestRaw(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const token = localStorage.getItem('auth_token');
   
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
+
+  if (options.body !== undefined && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -45,16 +62,13 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
     throw new ApiClientError(response.status, errData?.error || response.statusText, errData);
   }
+  return response;
+}
 
-  // Handle empty responses
-  const text = await response.text();
-  if (!text) return {} as T;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {} as T;
-  }
+function parseFileName(disposition: string | null): string | null {
+  if (!disposition) return null;
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  return match?.[1] ?? null;
 }
 
 export const api = {
@@ -63,4 +77,11 @@ export const api = {
   patch: <T>(endpoint: string, body: unknown) => request<T>(endpoint, { method: 'PATCH', body: JSON.stringify(body) }),
   put: <T>(endpoint: string, body: unknown) => request<T>(endpoint, { method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(endpoint: string) => request<T>(endpoint, { method: 'DELETE' }),
+  downloadJson: async (endpoint: string) => {
+    const response = await requestRaw(endpoint);
+    return {
+      blob: await response.blob(),
+      fileName: parseFileName(response.headers.get('Content-Disposition')),
+    };
+  },
 };
