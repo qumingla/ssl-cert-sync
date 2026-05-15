@@ -9,14 +9,16 @@ import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { ArrowLeft, Play, Pencil, Activity } from "lucide-react";
-import { formatDistanceToNow, format } from "date-fns";
+import { format } from "date-fns";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { useForm } from "react-hook-form";
+import { useI18n } from "../components/LocaleProvider";
 
 export function NodeDetail() {
   const { id } = useParams();
   const queryClient = useQueryClient();
+  const { t, formatRelative, statusLabel } = useI18n();
   const [isEditOpen, setIsEditOpen] = useState(false);
 
   const { data: node, isLoading } = useQuery<NodeDetailResponse>({
@@ -35,9 +37,9 @@ export function NodeDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', id] });
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      toast.success("Started deployment job on node");
+      toast.success(t("nodeDetail.startedJob"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to run job")
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.runFailed"))
   });
 
   const assignmentMutation = useMutation({
@@ -45,9 +47,9 @@ export function NodeDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes', id] });
       setIsEditOpen(false);
-      toast.success("Assignments updated successfully");
+      toast.success(t("nodeDetail.assignmentsUpdated"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to update assignments")
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.assignmentsFailed"))
   });
 
   const form = useForm<{ domainIds: string[] }>({
@@ -65,12 +67,12 @@ export function NodeDetail() {
     assignmentMutation.mutate(values.domainIds);
   };
 
-  if (isLoading) return <div className="p-8">Loading node details...</div>;
-  if (!node) return <div className="p-8 text-destructive">Node not found</div>;
+  if (isLoading) return <div className="p-8">{t("nodeDetail.loading")}</div>;
+  if (!node) return <div className="p-8 text-destructive">{t("nodeDetail.notFound")}</div>;
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    toast.success("Copied SHA256");
+    toast.success(t("domains.shaCopied"));
   };
 
   const renderSha = (sha: string | null) => {
@@ -101,10 +103,10 @@ export function NodeDetail() {
         </div>
         <div className="w-full sm:w-auto sm:ml-auto flex flex-col sm:flex-row items-start sm:items-center gap-2">
           <Badge variant={node.isOnline ? 'default' : 'destructive'} className="text-sm px-3 py-1">
-            {node.isOnline ? 'Online' : 'Offline'}
+            {node.isOnline ? t("status.online") : t("status.offline")}
           </Badge>
           <Button className="w-full sm:w-auto" onClick={() => runNowMutation.mutate()} disabled={runNowMutation.isPending || !node.isOnline}>
-            <Play className="mr-2 h-4 w-4" /> Run Now
+            <Play className="mr-2 h-4 w-4" /> {t("nodeDetail.runNow")}
           </Button>
         </div>
       </div>
@@ -112,24 +114,24 @@ export function NodeDetail() {
       <div className="grid gap-6 md:grid-cols-3">
         <Card className="md:col-span-2">
           <CardHeader>
-            <CardTitle>Basic Information</CardTitle>
+            <CardTitle>{t("nodeDetail.basicInfo")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
-                <p className="text-muted-foreground mb-1">Target Directory</p>
+                <p className="text-muted-foreground mb-1">{t("nodeDetail.targetDirectory")}</p>
                 <p className="font-mono">{node.certDir}</p>
               </div>
               <div>
-                <p className="text-muted-foreground mb-1">Last Heartbeat</p>
-                <p>{node.lastHeartbeatAt ? formatDistanceToNow(new Date(node.lastHeartbeatAt), { addSuffix: true }) : 'Never'}</p>
+                <p className="text-muted-foreground mb-1">{t("table.lastHeartbeat")}</p>
+                <p>{node.lastHeartbeatAt ? formatRelative(node.lastHeartbeatAt) : t("common.never")}</p>
               </div>
               <div className="col-span-2">
-                <p className="text-muted-foreground mb-1">Latest Error</p>
+                <p className="text-muted-foreground mb-1">{t("nodeDetail.latestError")}</p>
                 {node.lastError ? (
                   <p className="text-destructive bg-destructive/10 p-2 rounded text-xs font-mono">{node.lastError}</p>
                 ) : (
-                  <p className="text-muted-foreground">None</p>
+                  <p className="text-muted-foreground">{t("common.none")}</p>
                 )}
               </div>
             </div>
@@ -139,7 +141,7 @@ export function NodeDetail() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Activity className="h-4 w-4" /> Recent Events
+              <Activity className="h-4 w-4" /> {t("nodeDetail.recentEvents")}
             </CardTitle>
           </CardHeader>
           <CardContent className="max-h-[200px] overflow-y-auto">
@@ -153,7 +155,7 @@ export function NodeDetail() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">No recent events recorded.</p>
+              <p className="text-sm text-muted-foreground">{t("nodeDetail.noRecentEvents")}</p>
             )}
           </CardContent>
         </Card>
@@ -162,11 +164,11 @@ export function NodeDetail() {
       <Card>
         <CardHeader className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
-            <CardTitle>Assigned Domains</CardTitle>
-            <CardDescription>Certificates synchronized to this node.</CardDescription>
+            <CardTitle>{t("nodeDetail.assignedDomains")}</CardTitle>
+            <CardDescription>{t("nodeDetail.assignedDescription")}</CardDescription>
           </div>
           <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={openEdit}>
-            <Pencil className="mr-2 h-4 w-4" /> Edit Assignments
+            <Pencil className="mr-2 h-4 w-4" /> {t("nodeDetail.editAssignments")}
           </Button>
         </CardHeader>
         <CardContent className="p-0">
@@ -174,16 +176,16 @@ export function NodeDetail() {
             <Table className="min-w-[720px]">
             <TableHeader>
               <TableRow>
-                <TableHead>Domain</TableHead>
-                <TableHead>Desired SHA256</TableHead>
-                <TableHead>Deployed SHA256</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Last Deploy</TableHead>
+                <TableHead>{t("table.domain")}</TableHead>
+                <TableHead>{t("nodeDetail.desiredSha")}</TableHead>
+                <TableHead>{t("nodeDetail.deployedSha")}</TableHead>
+                <TableHead>{t("table.status")}</TableHead>
+                <TableHead>{t("nodeDetail.lastDeploy")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {node.assignments?.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No domains assigned.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">{t("nodeDetail.noAssignments")}</TableCell></TableRow>
               ) : (
                 node.assignments?.map((a) => (
                   <TableRow key={a.id}>
@@ -192,11 +194,11 @@ export function NodeDetail() {
                     <TableCell>{renderSha(a.deployedSha256)}</TableCell>
                     <TableCell>
                       <Badge variant={a.status === 'synced' ? 'default' : a.status === 'pending' ? 'secondary' : 'destructive'}>
-                        {a.status}
+                        {statusLabel(a.status)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {a.lastDeployAt ? formatDistanceToNow(new Date(a.lastDeployAt), { addSuffix: true }) : 'Never'}
+                      {a.lastDeployAt ? formatRelative(a.lastDeployAt) : t("common.never")}
                     </TableCell>
                   </TableRow>
                 ))
@@ -211,12 +213,12 @@ export function NodeDetail() {
         <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
           <form onSubmit={form.handleSubmit(onSubmit)}>
             <DialogHeader>
-              <DialogTitle>Edit Assignments</DialogTitle>
-              <DialogDescription>Select the domains that should be synchronized to {node.name}.</DialogDescription>
+              <DialogTitle>{t("nodeDetail.editAssignments")}</DialogTitle>
+              <DialogDescription>{t("nodeDetail.selectDomains", { node: node.name })}</DialogDescription>
             </DialogHeader>
             <div className="py-4 space-y-4 max-h-[300px] overflow-y-auto">
               {domains.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No domains available.</p>
+                <p className="text-sm text-muted-foreground">{t("nodeDetail.noAvailableDomains")}</p>
               ) : (
                 domains.map(d => (
                   <div key={d.id} className="flex items-center space-x-3">
@@ -236,7 +238,7 @@ export function NodeDetail() {
             </div>
             <DialogFooter>
               <Button type="submit" disabled={assignmentMutation.isPending}>
-                {assignmentMutation.isPending ? 'Saving...' : 'Save Assignments'}
+                {assignmentMutation.isPending ? t("common.saving") : t("nodeDetail.saveAssignments")}
               </Button>
             </DialogFooter>
           </form>

@@ -11,12 +11,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Plus, Server, Trash, Copy } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
+import { useI18n } from "../components/LocaleProvider";
 
 export function Nodes() {
   const queryClient = useQueryClient();
+  const { t, formatRelative } = useI18n();
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [newNodeToken, setNewNodeToken] = useState<string | null>(null);
@@ -35,9 +36,9 @@ export function Nodes() {
     onSuccess: (data: { token: string }) => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setNewNodeToken(data.token);
-      toast.success("Node added successfully");
+      toast.success(t("nodes.added"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to add node")
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodes.addFailed"))
   });
 
   const deleteMutation = useMutation({
@@ -45,9 +46,9 @@ export function Nodes() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setDeleteId(null);
-      toast.success("Node deleted");
+      toast.success(t("nodes.deleted"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to delete node")
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodes.deleteFailed"))
   });
 
   const onSubmit = (values: Record<string, string>) => {
@@ -56,15 +57,15 @@ export function Nodes() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
+    toast.success(t("common.copied"));
   };
 
   return (
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Nodes</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("nodes.title")}</h1>
         <Button className="w-full sm:w-auto" onClick={() => setIsAddOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" /> Add Node
+          <Plus className="mr-2 h-4 w-4" /> {t("nodes.add")}
         </Button>
       </div>
 
@@ -74,20 +75,20 @@ export function Nodes() {
             <Table className="min-w-[720px]">
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>IP Address</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Cert Directory</TableHead>
-                <TableHead>Assigned</TableHead>
-                <TableHead>Last Online</TableHead>
+                <TableHead>{t("table.name")}</TableHead>
+                <TableHead>{t("table.ipAddress")}</TableHead>
+                <TableHead>{t("table.status")}</TableHead>
+                <TableHead>{t("table.certDirectory")}</TableHead>
+                <TableHead>{t("table.assigned")}</TableHead>
+                <TableHead>{t("table.lastOnline")}</TableHead>
                 <TableHead className="w-[80px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={7} className="text-center py-8">Loading...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
               ) : nodes.length === 0 ? (
-                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No nodes registered.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">{t("nodes.empty")}</TableCell></TableRow>
               ) : (
                 nodes.map((n) => (
                   <TableRow key={n.id}>
@@ -100,13 +101,13 @@ export function Nodes() {
                     <TableCell className="font-mono text-sm text-muted-foreground">{n.ip}</TableCell>
                     <TableCell>
                       <Badge variant={n.isOnline ? 'default' : 'destructive'}>
-                        {n.isOnline ? 'Online' : 'Offline'}
+                          {n.isOnline ? t("status.online") : t("status.offline")}
                       </Badge>
                     </TableCell>
                     <TableCell className="font-mono text-xs">{n.certDir}</TableCell>
-                    <TableCell>{n.assignedDomainsCount} domains</TableCell>
+                    <TableCell>{t("nodes.assignedDomains", { count: n.assignedDomainsCount })}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {n.lastHeartbeatAt ? formatDistanceToNow(new Date(n.lastHeartbeatAt), { addSuffix: true }) : 'Never'}
+                      {n.lastHeartbeatAt ? formatRelative(n.lastHeartbeatAt) : t("common.never")}
                     </TableCell>
                     <TableCell>
                       <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(n.id)}>
@@ -133,35 +134,35 @@ export function Nodes() {
           {!newNodeToken ? (
             <form onSubmit={form.handleSubmit(onSubmit)}>
               <DialogHeader>
-                <DialogTitle>Add New Node</DialogTitle>
-                <DialogDescription>Register a new node to distribute certificates to.</DialogDescription>
+                <DialogTitle>{t("nodes.addTitle")}</DialogTitle>
+                <DialogDescription>{t("nodes.addDescription")}</DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="name">Node Name</Label>
-                  <Input id="name" placeholder="web-01" required {...form.register('name')} />
+                  <Label htmlFor="name">{t("nodes.nodeName")}</Label>
+                  <Input id="name" placeholder={t("nodes.nodePlaceholder")} required {...form.register('name')} />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="ip">IP Address</Label>
+                  <Label htmlFor="ip">{t("table.ipAddress")}</Label>
                   <Input id="ip" placeholder="192.168.1.100" required {...form.register('ip')} />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="certDir">Certificate Directory</Label>
+                  <Label htmlFor="certDir">{t("table.certDirectory")}</Label>
                   <Input id="certDir" placeholder="/etc/nginx/ssl" required {...form.register('certDir')} />
                 </div>
               </div>
               <DialogFooter>
                 <Button type="submit" disabled={createMutation.isPending}>
-                  {createMutation.isPending ? 'Generating Token...' : 'Register Node'}
+                  {createMutation.isPending ? t("nodes.generatingToken") : t("nodes.register")}
                 </Button>
               </DialogFooter>
             </form>
           ) : (
             <>
               <DialogHeader>
-                <DialogTitle>Node Registered</DialogTitle>
+                <DialogTitle>{t("nodes.registered")}</DialogTitle>
                 <DialogDescription>
-                  Run the following command on the target node to connect it. This token will only be shown once.
+                  {t("nodes.commandDescription")}
                 </DialogDescription>
               </DialogHeader>
               <div className="py-4">
@@ -175,7 +176,7 @@ export function Nodes() {
                 </div>
               </div>
               <DialogFooter>
-                <Button onClick={() => setIsAddOpen(false)}>Done</Button>
+                <Button onClick={() => setIsAddOpen(false)}>{t("nodes.done")}</Button>
               </DialogFooter>
             </>
           )}
@@ -185,15 +186,15 @@ export function Nodes() {
       <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
         <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Delete Node</DialogTitle>
+            <DialogTitle>{t("nodes.deleteTitle")}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete this node? Certificates already deployed will remain on the node, but it will no longer receive updates.
+              {t("nodes.deleteDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>{t("common.cancel")}</Button>
             <Button variant="destructive" onClick={() => deleteId && deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
-              {deleteMutation.isPending ? 'Deleting...' : 'Delete Node'}
+              {deleteMutation.isPending ? t("common.deleting") : t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>

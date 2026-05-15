@@ -12,6 +12,7 @@ import { Label } from "../components/ui/label";
 import { Plus, Trash, Play, Pencil, X } from "lucide-react";
 import { toast } from "sonner";
 import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import { useI18n } from "../components/LocaleProvider";
 
 const PROVIDERS = [
   { id: 'dns_cf', name: 'Cloudflare', fields: ['CF_Token', 'CF_Key', 'CF_Email'] },
@@ -33,6 +34,7 @@ type FormValues = {
 
 export function DnsChannels() {
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
@@ -77,9 +79,9 @@ export function DnsChannels() {
       queryClient.invalidateQueries({ queryKey: ['dns-channels'] });
       setIsAddOpen(false);
       form.reset({ name: "", provider: "dns_cf", credentials: {}, customFields: [] });
-      toast.success("DNS Channel saved successfully");
+      toast.success(t("dns.saved"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to save DNS channel")
+    onError: (err: unknown) => toast.error((err as Error).message || t("dns.saveFailed"))
   });
 
   const deleteMutation = useMutation({
@@ -87,15 +89,15 @@ export function DnsChannels() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dns-channels'] });
       setDeleteId(null);
-      toast.success("DNS Channel deleted");
+      toast.success(t("dns.deleted"));
     },
-    onError: (err: unknown) => toast.error((err as Error).message || "Failed to delete DNS channel")
+    onError: (err: unknown) => toast.error((err as Error).message || t("dns.deleteFailed"))
   });
 
   const testMutation = useMutation({
     mutationFn: (id: string) => api.post(`/admin/dns-channels/${id}/test`),
-    onSuccess: () => toast.success("DNS API Test Passed"),
-    onError: (err: unknown) => toast.error(`Test failed: ${(err as Error).message}`)
+    onSuccess: () => toast.success(t("dns.testPassed")),
+    onError: (err: unknown) => toast.error(t("dns.testFailed", { message: (err as Error).message }))
   });
 
   const onSubmit = (values: FormValues) => {
@@ -128,9 +130,9 @@ export function DnsChannels() {
   return (
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">DNS Channels</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("dns.title")}</h1>
         <Button className="w-full sm:w-auto" onClick={() => { form.reset({ id: undefined, name: "", provider: "dns_cf", credentials: {}, customFields: [] }); setIsAddOpen(true); }}>
-          <Plus className="mr-2 h-4 w-4" /> Add Channel
+          <Plus className="mr-2 h-4 w-4" /> {t("dns.add")}
         </Button>
       </div>
 
@@ -140,28 +142,28 @@ export function DnsChannels() {
             <Table className="min-w-[720px]">
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Provider</TableHead>
-                <TableHead>Configuration</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>{t("table.name")}</TableHead>
+                <TableHead>{t("table.provider")}</TableHead>
+                <TableHead>{t("table.configuration")}</TableHead>
+                <TableHead className="text-right">{t("table.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={4} className="text-center py-8">Loading...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={4} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
               ) : channels.length === 0 ? (
-                <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">No channels configured.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">{t("dns.empty")}</TableCell></TableRow>
               ) : (
                 channels.map((c) => (
                   <TableRow key={c.id}>
                     <TableCell className="font-medium">{c.name}</TableCell>
                     <TableCell>{PROVIDERS.find(p => p.id === c.provider)?.name || c.provider}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      已配置 ({Object.keys(c.credentials || {}).length} keys)
+                      {t("dns.configured", { count: Object.keys(c.credentials || {}).length })}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="sm" onClick={() => testMutation.mutate(c.id)}>
-                        <Play className="mr-2 h-4 w-4" /> Test
+                        <Play className="mr-2 h-4 w-4" /> {t("dns.test")}
                       </Button>
                       <Button variant="ghost" size="icon" onClick={() => openEdit(c)}>
                         <Pencil className="h-4 w-4" />
@@ -183,16 +185,16 @@ export function DnsChannels() {
         <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md max-h-[90vh] overflow-y-auto">
           <form onSubmit={form.handleSubmit(onSubmit)}>
             <DialogHeader>
-              <DialogTitle>{form.getValues('id') ? 'Edit DNS Channel' : 'Add DNS Channel'}</DialogTitle>
-              <DialogDescription>Add API credentials for DNS validation during certificate requests.</DialogDescription>
+              <DialogTitle>{form.getValues('id') ? t("dns.editTitle") : t("dns.addTitle")}</DialogTitle>
+              <DialogDescription>{t("dns.description")}</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4 max-h-[60vh] overflow-y-auto px-1">
               <div className="grid gap-2">
-                <Label htmlFor="name">Channel Name</Label>
-                <Input id="name" placeholder="Cloudflare Main" required {...form.register('name')} />
+                <Label htmlFor="name">{t("dns.channelName")}</Label>
+                <Input id="name" placeholder={t("dns.channelPlaceholder")} required {...form.register('name')} />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="provider">Provider</Label>
+                <Label htmlFor="provider">{t("table.provider")}</Label>
                 <Select value={provider} onValueChange={(val) => val && form.setValue('provider', val)}>
                   <SelectTrigger>
                     <SelectValue />
@@ -206,8 +208,8 @@ export function DnsChannels() {
               </div>
               
               <div className="p-4 bg-muted/50 rounded-md space-y-4 mt-2 border">
-                <p className="text-sm font-medium">Credentials for {selectedProviderInfo.name}</p>
-                {form.getValues('id') && <p className="text-xs text-muted-foreground">Leave fields blank to keep existing configured values.</p>}
+                <p className="text-sm font-medium">{t("dns.credentialsFor", { provider: selectedProviderInfo.name })}</p>
+                {form.getValues('id') && <p className="text-xs text-muted-foreground">{t("dns.keepExisting")}</p>}
                 
                 {provider !== 'custom' ? (
                   selectedProviderInfo.fields.map(field => (
@@ -226,15 +228,15 @@ export function DnsChannels() {
                   <div className="space-y-3">
                     {customFields.map((field, index) => (
                       <div key={field.id} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                        <Input placeholder="Key (e.g. CUSTOM_API)" required {...form.register(`customFields.${index}.key`)} className="w-full sm:flex-1" />
-                        <Input type="password" placeholder={form.getValues('id') ? "********" : "Value"} required={!form.getValues('id')} {...form.register(`customFields.${index}.value`)} className="w-full sm:flex-1" />
+                        <Input placeholder={t("dns.customKey")} required {...form.register(`customFields.${index}.key`)} className="w-full sm:flex-1" />
+                        <Input type="password" placeholder={form.getValues('id') ? "********" : t("dns.customValue")} required={!form.getValues('id')} {...form.register(`customFields.${index}.value`)} className="w-full sm:flex-1" />
                         <Button type="button" variant="ghost" size="icon" onClick={() => remove(index)} className="self-end sm:self-auto">
                           <X className="h-4 w-4" />
                         </Button>
                       </div>
                     ))}
                     <Button type="button" variant="outline" size="sm" onClick={() => append({ key: '', value: '' })}>
-                      <Plus className="mr-2 h-4 w-4" /> Add Field
+                      <Plus className="mr-2 h-4 w-4" /> {t("dns.addField")}
                     </Button>
                   </div>
                 )}
@@ -242,7 +244,7 @@ export function DnsChannels() {
             </div>
             <DialogFooter>
               <Button type="submit" disabled={saveMutation.isPending}>
-                {saveMutation.isPending ? 'Saving...' : 'Save Channel'}
+                {saveMutation.isPending ? t("common.saving") : t("dns.saveChannel")}
               </Button>
             </DialogFooter>
           </form>
@@ -252,15 +254,15 @@ export function DnsChannels() {
       <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
         <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Delete DNS Channel</DialogTitle>
+            <DialogTitle>{t("dns.deleteTitle")}</DialogTitle>
             <DialogDescription>
-              Are you sure? Domains using this channel will fail to renew certificates.
+              {t("dns.deleteDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>{t("common.cancel")}</Button>
             <Button variant="destructive" onClick={() => deleteId && deleteMutation.mutate(deleteId)} disabled={deleteMutation.isPending}>
-              {deleteMutation.isPending ? 'Deleting...' : 'Delete Channel'}
+              {deleteMutation.isPending ? t("common.deleting") : t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
