@@ -383,17 +383,26 @@ async def run_node_now(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
     job = create_job(db, event_hub, "deploy", node_id, node["name"])
     append_log(db, job["id"], "[INFO] Deployment requested from Web UI.")
+    append_log(db, job["id"], "[INFO] Command queued for the node agent poller.")
     now = iso_now()
     db.execute(
         """
-        UPDATE node_assignments
-        SET deployed_sha256 = desired_sha256, status = 'synced', last_deploy_at = ?, updated_at = ?
-        WHERE node_id = ?
+        INSERT INTO node_commands
+            (id, node_id, job_id, type, payload_json, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
         """,
-        (now, now, node_id),
+        (
+            f"cmd_{uuid4().hex}",
+            node_id,
+            job["id"],
+            "sync_now",
+            dumps({"jobId": job["id"], "requestedAt": now, "source": "web"}),
+            now,
+            now,
+        ),
     )
-    event_hub.publish("deploy_success", "success", f"Deployment marked synced for {node['name']}", {"nodeId": node_id})
-    return finish_job(db, event_hub, job["id"])
+    event_hub.publish("job_started", "info", f"Deployment queued for {node['name']}", {"nodeId": node_id, "jobId": job["id"]})
+    return get_job(db, job["id"])
 
 
 @router.get("/jobs")

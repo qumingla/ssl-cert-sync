@@ -169,6 +169,22 @@ CREATE TABLE IF NOT EXISTS node_assignments (
     FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS node_commands (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    job_id TEXT,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    acked_at TEXT,
+    completed_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,

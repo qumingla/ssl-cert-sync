@@ -71,9 +71,9 @@ info "==== ${ACTION^^} 角色: ${ROLE} ===="
 
 # ── 安装依赖（仅安装时执行）─────────────────────────────────────────────────
 if [[ "${ACTION}" == "install" ]]; then
-    info "检查并安装依赖 (curl, openssl)..."
+    info "检查并安装依赖 (curl, openssl, python3)..."
     apt-get update -qq
-    apt-get install -y -qq curl openssl
+    apt-get install -y -qq curl openssl python3
 fi
 
 # ── Master 安装 ───────────────────────────────────────────────────────────────
@@ -108,6 +108,8 @@ install_master() {
 # ── Node 安装 ─────────────────────────────────────────────────────────────────
 install_node() {
     # 脚本
+    install -m 750 "${SCRIPT_DIR}/cert-node-agent.sh" /usr/local/bin/cert-node-agent.sh
+    info "脚本已安装: /usr/local/bin/cert-node-agent.sh"
     install -m 750 "${SCRIPT_DIR}/cert-node-pull.sh" /usr/local/bin/cert-node-pull.sh
     info "脚本已安装: /usr/local/bin/cert-node-pull.sh"
 
@@ -167,6 +169,11 @@ update_config_node() {
         warn "旧配置已备份，正在覆盖新配置..."
     fi
     install -m 600 "${SCRIPT_DIR}/etc_default_cert-node.conf" /etc/default/cert-node
+    install -m 750 "${SCRIPT_DIR}/cert-node-agent.sh" /usr/local/bin/cert-node-agent.sh
+    install -m 750 "${SCRIPT_DIR}/cert-node-pull.sh" /usr/local/bin/cert-node-pull.sh
+    install -m 644 "${SCRIPT_DIR}/cert-puller.service" /etc/systemd/system/cert-puller.service
+    install -m 644 "${SCRIPT_DIR}/cert-puller.timer" /etc/systemd/system/cert-puller.timer
+    systemctl daemon-reload
     
     # 重新读取配置并确认目录
     local cert_base
@@ -234,6 +241,8 @@ uninstall_node() {
     # 脚本
     rm -f /usr/local/bin/cert-node-pull.sh
     info "已移除: /usr/local/bin/cert-node-pull.sh"
+    rm -f /usr/local/bin/cert-node-agent.sh
+    info "已移除: /usr/local/bin/cert-node-agent.sh"
 
     # 配置文件
     if [[ -f /etc/default/cert-node ]]; then

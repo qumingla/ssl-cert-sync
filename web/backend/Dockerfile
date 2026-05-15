@@ -25,6 +25,8 @@ RUN git clone --depth=1 https://github.com/acmesh-official/acme.sh.git /opt/acme
 COPY web/backend/app /app/app
 COPY cert-master-sync.sh /usr/local/bin/cert-master-sync.sh
 RUN chmod 750 /usr/local/bin/cert-master-sync.sh
+COPY cert-node-agent.sh cert-node-pull.sh cert-puller.service cert-puller.timer /opt/ssl-sync-node/
+RUN chmod 750 /opt/ssl-sync-node/cert-node-agent.sh /opt/ssl-sync-node/cert-node-pull.sh
 COPY --from=frontend /src/web/frontend/dist /app/frontend-dist
 
 EXPOSE 8080

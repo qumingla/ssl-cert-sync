@@ -1,16 +1,16 @@
 [Unit]
-Description=SSL Certificate Puller Timer - Daily cert check and update
+Description=SSL Certificate Puller Timer - Frequent node sync and report
 Documentation=man:systemd.timer(5)
 
 [Timer]
-# 系统启动后 5 分钟执行一次（确保网络就绪）
-OnBootSec=5min
+# 系统启动后 1 分钟执行一次（确保网络就绪）
+OnBootSec=1min
 
-# 此后每 24 小时执行一次
-OnUnitActiveSec=24h
+# 此后每 2 分钟执行一次，保证 Run Now 能较快落地
+OnUnitActiveSec=2min
 
-# 随机延迟最多 30 分钟，避免多节点同时涌向 OpenList
-RandomizedDelaySec=30min
+# 轻微抖动，避免多节点同时命中 Master
+RandomizedDelaySec=30s
 
 # 若错过执行窗口（如机器关机），下次启动时补执行
 Persistent=true

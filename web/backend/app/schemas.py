@@ -151,3 +151,8 @@ class NodeReportItem(BaseModel):
 
 class NodeReport(BaseModel):
     items: list[NodeReportItem]
+
+
+class NodeCommandAck(BaseModel):
+    status: str = "completed"
+    error: str | None = None
