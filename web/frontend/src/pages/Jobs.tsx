@@ -136,10 +136,16 @@ function JobLogSheet({ job, onClose }: { job: Job | null, onClose: () => void })
     }
   }, [logData?.logs]);
 
-  const copyLogs = () => {
-    if (logData?.logs) {
-      navigator.clipboard.writeText(logData.logs);
+  const copyLogs = async () => {
+    if (!logData?.logs) {
+      return;
+    }
+
+    try {
+      await copyText(logData.logs);
       toast.success(t("jobs.logsCopied"));
+    } catch {
+      toast.error(t("jobs.logsCopyFailed"));
     }
   };
 
@@ -172,4 +178,30 @@ function JobLogSheet({ job, onClose }: { job: Job | null, onClose: () => void })
       </SheetContent>
     </Sheet>
   );
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.top = "-9999px";
+  textArea.style.left = "-9999px";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textArea);
+
+  if (!copied) {
+    throw new Error("copy failed");
+  }
 }

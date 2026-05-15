@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from ..db import Database, dumps, loads_object
+from ..db import Database, dumps, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
 from ..jobs import append_log, create_job, finish_job, get_job, job_from_row
@@ -502,7 +502,7 @@ async def test_telegram(
 
 def _settings(db: Database) -> dict[str, Any]:
     row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
-    return loads_object(row["value"] if row else "{}")
+    return merged_settings(row["value"] if row else "{}")
 
 
 def _require_domain(db: Database, domain_id: str) -> dict[str, Any]:

@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { toast } from "sonner";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { useEffect } from "react";
 import { Save, Bell, HardDrive, Terminal, Languages } from "lucide-react";
 import { type Language, useI18n } from "../components/LocaleProvider";
@@ -25,9 +25,10 @@ export function Settings() {
     defaultValues: {
       webdav: { url: '', auth: '' },
       telegram: { botToken: '', chatId: '' },
-      acme: { acmeHome: '', stagingBase: '/tmp/acme_staging', defaultRenewDays: 30 }
+      acme: { acmeHome: '', stagingBase: '/tmp/acme_staging', defaultRenewDays: 30, defaultCa: 'letsencrypt', accountEmail: '' }
     }
   });
+  const selectedAcmeCa = useWatch({ control: form.control, name: "acme.defaultCa" });
 
   useEffect(() => {
     if (settings) {
@@ -142,6 +143,23 @@ export function Settings() {
             <div className="grid gap-2">
               <Label htmlFor="acme.acmeHome">{t("settings.acmeHome")}</Label>
               <Input id="acme.acmeHome" placeholder="/root/.acme.sh" {...form.register('acme.acmeHome')} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="acme.defaultCa">{t("settings.defaultCa")}</Label>
+              <Select value={selectedAcmeCa || "letsencrypt"} onValueChange={(value) => form.setValue("acme.defaultCa", value ?? "letsencrypt", { shouldDirty: true })}>
+                <SelectTrigger id="acme.defaultCa" className="w-full sm:w-[240px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="letsencrypt">{t("settings.caLetsEncrypt")}</SelectItem>
+                  <SelectItem value="zerossl">{t("settings.caZeroSsl")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="acme.accountEmail">{t("settings.accountEmail")}</Label>
+              <Input id="acme.accountEmail" placeholder="name@example.com" {...form.register('acme.accountEmail')} />
+              <p className="text-sm text-muted-foreground">{t("settings.accountEmailHint")}</p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="acme.defaultRenewDays">{t("settings.renewDays")}</Label>

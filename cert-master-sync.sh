@@ -65,7 +65,9 @@ fi
 : "${ACME_HOME:=/root/.acme.sh}" \
   "${BUNDLED_ACME_HOME:=/opt/acme.sh}" \
   "${STAGING_BASE:=/tmp/acme_staging}" \
-  "${LOG_FILE:=/var/log/cert-master-sync.log}"
+  "${LOG_FILE:=/var/log/cert-master-sync.log}" \
+  "${ACME_SERVER:=letsencrypt}" \
+  "${ACME_ACCOUNT_EMAIL:=}"
 
 if [[ "${DNS_TEST_ONLY}" != "1" ]]; then
     : "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
@@ -246,8 +248,26 @@ pre_check() {
         send_tg_msg "🚨 [FATAL] Master 任务失败" "acme.sh 未安装或路径错误: ${acme_bin}"
         exit 1
     fi
+
+    if [[ "${ACME_SERVER}" == "zerossl" && -z "${ACME_ACCOUNT_EMAIL}" ]]; then
+        log "ERROR" "ZeroSSL 需要先配置账户邮箱，请在设置中填写 ACME 账户邮箱，或将默认 CA 改为 letsencrypt"
+        send_tg_msg "🚨 [FATAL] Master 任务失败" "ZeroSSL 需要 ACME 账户邮箱，当前 accountEmail 为空"
+        exit 1
+    fi
+
     log "INFO" "acme.sh: $("${acme_bin}" --version 2>&1 | head -1)"
     log "INFO" "OpenSSL: $(openssl version)"
+    log "INFO" "ACME CA: ${ACME_SERVER}"
+
+    if ! "${acme_bin}" --set-default-ca --server "${ACME_SERVER}" >> "${LOG_FILE}" 2>&1; then
+        log "WARN" "设置默认 CA 失败，后续申请仍将显式指定 --server ${ACME_SERVER}"
+    fi
+
+    if [[ -n "${ACME_ACCOUNT_EMAIL}" ]]; then
+        if ! "${acme_bin}" --register-account -m "${ACME_ACCOUNT_EMAIL}" --server "${ACME_SERVER}" >> "${LOG_FILE}" 2>&1; then
+            log "WARN" "注册/刷新 ACME 账户失败，将继续尝试签发: ${ACME_ACCOUNT_EMAIL}"
+        fi
+    fi
 
     command -v curl &>/dev/null || { log "ERROR" "curl 未安装"; exit 1; }
     install -d -m 700 "${STAGING_BASE}"
@@ -347,6 +367,7 @@ process_domain() {
         --issue \
         ${acme_stage_flag:+${acme_stage_flag}} \
         ${FORCE_REISSUE:+--force} \
+        --server "${ACME_SERVER}" \
         --dns "${dns_plugin}" \
         -d "*.${domain}" \
         -d "${domain}" \

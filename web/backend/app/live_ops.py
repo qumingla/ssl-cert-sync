@@ -14,7 +14,7 @@ from urllib import error, request
 from uuid import uuid4
 
 from .config import AppConfig
-from .db import Database, loads_object
+from .db import Database, loads_object, merged_settings
 from .timeutil import iso_now
 
 
@@ -279,7 +279,7 @@ async def _run_process(args: list[str], *, line_logger: LogWriter | None = None)
 
 def _settings(db: Database) -> dict[str, Any]:
     row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
-    return loads_object(row["value"] if row else "{}")
+    return merged_settings(row["value"] if row else "{}")
 
 
 def _domain_context(db: Database, domain_id: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -331,6 +331,8 @@ def _write_runtime_master_config(
         f'STAGING_BASE={_shell_quote(str(staging_base))}',
         f'LOG_FILE={_shell_quote(str(config.log_dir / "cert-master-sync.log"))}',
         f'RENEW_DAYS_BEFORE={_shell_quote(str(acme_settings.get("defaultRenewDays") or 7))}',
+        f'ACME_SERVER={_shell_quote(str(acme_settings.get("defaultCa") or "letsencrypt"))}',
+        f'ACME_ACCOUNT_EMAIL={_shell_quote(str(acme_settings.get("accountEmail") or ""))}',
     ]
     for key, value in sorted(credentials.items()):
         lines.append(f"{key}={_shell_quote(str(value))}")

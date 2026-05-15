@@ -108,5 +108,7 @@ export interface Settings {
     acmeHome: string;
     stagingBase: string;
     defaultRenewDays: number;
+    defaultCa: string;
+    accountEmail: string;
   };
 }

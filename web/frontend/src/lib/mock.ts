@@ -31,7 +31,7 @@ const jobs: Job[] = [
 let settings: Settings = {
   webdav: { url: 'https://dav.example.com', auth: 'user:pass' },
   telegram: { botToken: '123:abc', chatId: '-100123' },
-  acme: { acmeHome: '/root/.acme.sh', stagingBase: "/tmp/acme_staging", defaultRenewDays: 20 },
+  acme: { acmeHome: '/root/.acme.sh', stagingBase: "/tmp/acme_staging", defaultRenewDays: 20, defaultCa: 'letsencrypt', accountEmail: '' },
 };
 
 export const eventStreamSubscribers: Array<(event: SystemEvent) => void> = [];

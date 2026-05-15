@@ -63,6 +63,8 @@ class AcmeSettings(BaseModel):
     acmeHome: str
     stagingBase: str
     defaultRenewDays: int
+    defaultCa: str = "letsencrypt"
+    accountEmail: str = ""
 
 
 class SettingsPayload(BaseModel):
