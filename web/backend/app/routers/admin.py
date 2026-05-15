@@ -30,6 +30,7 @@ from ..schemas import (
     DnsChannelPatch,
     DomainCreate,
     DomainPatch,
+    NodeCommandRequest,
     NodeCreate,
     NodePatch,
     SettingsPayload,
@@ -378,31 +379,27 @@ async def run_node_now(
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, Any]:
-    node = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
-    if node is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
-    job = create_job(db, event_hub, "deploy", node_id, node["name"])
-    append_log(db, job["id"], "[INFO] Deployment requested from Web UI.")
-    append_log(db, job["id"], "[INFO] Command queued for the node agent poller.")
-    now = iso_now()
-    db.execute(
-        """
-        INSERT INTO node_commands
-            (id, node_id, job_id, type, payload_json, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-        """,
-        (
-            f"cmd_{uuid4().hex}",
-            node_id,
-            job["id"],
-            "sync_now",
-            dumps({"jobId": job["id"], "requestedAt": now, "source": "web"}),
-            now,
-            now,
-        ),
-    )
-    event_hub.publish("job_started", "info", f"Deployment queued for {node['name']}", {"nodeId": node_id, "jobId": job["id"]})
-    return get_job(db, job["id"])
+    return _queue_node_command(db, event_hub, node_id, "sync_all", [])
+
+
+@router.post("/nodes/{node_id}/deploy")
+async def deploy_node_domains(
+    node_id: str,
+    payload: NodeCommandRequest,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    return _queue_node_command(db, event_hub, node_id, "sync_domains", payload.domainIds)
+
+
+@router.post("/nodes/{node_id}/delete-certs")
+async def delete_node_domain_certs(
+    node_id: str,
+    payload: NodeCommandRequest,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    return _queue_node_command(db, event_hub, node_id, "delete_domains", payload.domainIds)
 
 
 @router.get("/jobs")
@@ -714,6 +711,87 @@ async def test_telegram(
 def _settings(db: Database) -> dict[str, Any]:
     row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
     return merged_settings(row["value"] if row else "{}")
+
+
+def _queue_node_command(
+    db: Database,
+    event_hub: EventHub,
+    node_id: str,
+    command_type: str,
+    requested_domain_ids: list[str],
+) -> dict[str, Any]:
+    node_row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
+    if node_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
+
+    assignment_rows = db.query_all(
+        """
+        SELECT a.domain_id, d.domain
+        FROM node_assignments a
+        JOIN domains d ON d.id = a.domain_id
+        WHERE a.node_id = ?
+        ORDER BY d.domain
+        """,
+        (node_id,),
+    )
+    assignments_by_id = {row["domain_id"]: row for row in assignment_rows}
+
+    if command_type == "sync_all":
+        domain_ids = list(assignments_by_id.keys())
+    else:
+        domain_ids = [domain_id for domain_id in requested_domain_ids if domain_id in assignments_by_id]
+
+    if not domain_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "No assigned domains selected for this node"})
+
+    domain_names = [str(assignments_by_id[domain_id]["domain"]) for domain_id in domain_ids]
+    now = iso_now()
+
+    if command_type == "delete_domains":
+        job_type = "delete"
+        summary = "delete local certificates"
+    else:
+        job_type = "deploy"
+        summary = "deploy certificates"
+
+    target_name = node_row["name"] if command_type == "sync_all" else f"{node_row['name']} ({len(domain_names)} domain{'s' if len(domain_names) != 1 else ''})"
+    job = create_job(db, event_hub, job_type, node_id, target_name)
+    append_log(db, job["id"], f"[INFO] Requested to {summary} on node {node_row['name']}.")
+    append_log(db, job["id"], f"[INFO] Domains: {', '.join(domain_names)}")
+    append_log(db, job["id"], "[INFO] Command queued for the node agent poller.")
+
+    db.execute(
+        """
+        INSERT INTO node_commands
+            (id, node_id, job_id, type, payload_json, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (
+            f"cmd_{uuid4().hex}",
+            node_id,
+            job["id"],
+            command_type,
+            dumps(
+                {
+                    "jobId": job["id"],
+                    "requestedAt": now,
+                    "source": "web",
+                    "domainIds": domain_ids,
+                    "domainNames": domain_names,
+                }
+            ),
+            now,
+            now,
+        ),
+    )
+
+    event_hub.publish(
+        "job_started",
+        "info",
+        f"Node command queued for {node_row['name']}",
+        {"nodeId": node_id, "jobId": job["id"], "commandType": command_type, "domainIds": domain_ids},
+    )
+    return get_job(db, job["id"])
 
 
 def _require_domain(db: Database, domain_id: str) -> dict[str, Any]:

@@ -20,8 +20,8 @@ bootstrap_router = APIRouter(tags=["node"])
 
 
 @bootstrap_router.get("/api/agent.sh", include_in_schema=False)
-async def download_agent_script(request: Request) -> PlainTextResponse:
-    master_url = str(request.base_url).rstrip("/")
+async def download_agent_script(request: Request, db: Database = Depends(get_db)) -> PlainTextResponse:
+    master_url = _resolve_public_base_url(request, db)
     asset_dir = _node_asset_dir()
     agent_script = (asset_dir / "cert-node-agent.sh").read_text(encoding="utf-8")
     pull_script = (asset_dir / "cert-node-pull.sh").read_text(encoding="utf-8")
@@ -231,6 +231,15 @@ def _node_asset_dir() -> Path:
     if len(parents) >= 5:
         return parents[4]
     return Path.cwd()
+
+
+def _resolve_public_base_url(request: Request, db: Database) -> str:
+    settings_row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
+    settings = merged_settings(settings_row["value"] if settings_row else "{}")
+    configured = str(settings.get("node", {}).get("publicBaseUrl") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
 
 
 def _render_agent_installer(

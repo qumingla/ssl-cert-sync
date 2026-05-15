@@ -49,6 +49,10 @@ class AssignmentUpdate(BaseModel):
     domainIds: list[str]
 
 
+class NodeCommandRequest(BaseModel):
+    domainIds: list[str] = Field(default_factory=list)
+
+
 class WebDavSettings(BaseModel):
     url: str
     auth: str
@@ -67,10 +71,15 @@ class AcmeSettings(BaseModel):
     accountEmail: str = ""
 
 
+class NodeAccessSettings(BaseModel):
+    publicBaseUrl: str = ""
+
+
 class SettingsPayload(BaseModel):
     webdav: WebDavSettings
     telegram: TelegramSettings
     acme: AcmeSettings
+    node: NodeAccessSettings = Field(default_factory=NodeAccessSettings)
 
 
 class BackupDnsChannel(BaseModel):

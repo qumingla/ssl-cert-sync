@@ -28,7 +28,8 @@ export function Settings() {
     defaultValues: {
       webdav: { url: '', auth: '' },
       telegram: { botToken: '', chatId: '' },
-      acme: { acmeHome: '', stagingBase: '/tmp/acme_staging', defaultRenewDays: 30, defaultCa: 'letsencrypt', accountEmail: '' }
+      acme: { acmeHome: '', stagingBase: '/tmp/acme_staging', defaultRenewDays: 30, defaultCa: 'letsencrypt', accountEmail: '' },
+      node: { publicBaseUrl: '' }
     }
   });
   const selectedAcmeCa = useWatch({ control: form.control, name: "acme.defaultCa" });
@@ -163,6 +164,15 @@ export function Settings() {
             </SelectContent>
           </Select>
           <p className="text-sm text-muted-foreground">{t("settings.languageDescription")}</p>
+          <div className="grid gap-2 pt-4">
+            <Label htmlFor="node.publicBaseUrl">{t("settings.nodePublicBaseUrl")}</Label>
+            <Input
+              id="node.publicBaseUrl"
+              placeholder="https://ssl.example.com"
+              {...form.register('node.publicBaseUrl')}
+            />
+            <p className="text-sm text-muted-foreground">{t("settings.nodePublicBaseUrlDescription")}</p>
+          </div>
         </CardContent>
       </Card>
 

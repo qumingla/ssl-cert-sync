@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { NodeDetailResponse, Domain } from "../types/api";
 import { Button } from "../components/ui/button";
@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
-import { ArrowLeft, Play, Pencil, Activity } from "lucide-react";
+import { ArrowLeft, Play, Pencil, Activity, Download, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -20,6 +20,9 @@ export function NodeDetail() {
   const queryClient = useQueryClient();
   const { t, formatRelative, statusLabel } = useI18n();
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [pendingDeleteSelection, setPendingDeleteSelection] = useState<{ domainIds: string[]; domainNames: string[] } | null>(null);
+  const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const { data: node, isLoading } = useQuery<NodeDetailResponse>({
     queryKey: ['nodes', id],
@@ -32,6 +35,23 @@ export function NodeDetail() {
     queryFn: () => api.get<Domain[]>('/admin/domains'),
   });
 
+  const allAssignedDomainIds = useMemo(
+    () => (node?.assignments ?? []).map((assignment) => assignment.domainId),
+    [node?.assignments],
+  );
+  const effectiveSelectedDomainIds = useMemo(
+    () => selectedDomainIds.filter((domainId) => allAssignedDomainIds.includes(domainId)),
+    [allAssignedDomainIds, selectedDomainIds],
+  );
+  const hasSelection = effectiveSelectedDomainIds.length > 0;
+  const allSelected = allAssignedDomainIds.length > 0 && effectiveSelectedDomainIds.length === allAssignedDomainIds.length;
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = hasSelection && !allSelected;
+    }
+  }, [allSelected, hasSelection]);
+
   const runNowMutation = useMutation({
     mutationFn: () => api.post(`/admin/nodes/${id}/run-now`),
     onSuccess: () => {
@@ -40,6 +60,37 @@ export function NodeDetail() {
       toast.success(t("nodeDetail.startedJob"));
     },
     onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.runFailed"))
+  });
+
+  const deployAssignmentMutation = useMutation({
+    mutationFn: (domainIds: string[]) => api.post(`/admin/nodes/${id}/deploy`, { domainIds }),
+    onSuccess: (_result, domainIds) => {
+      queryClient.invalidateQueries({ queryKey: ['nodes', id] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      setSelectedDomainIds((current) => current.filter((domainId) => !domainIds.includes(domainId)));
+      toast.success(
+        domainIds.length > 1
+          ? t("nodeDetail.bulkDeployQueued", { count: domainIds.length })
+          : t("nodeDetail.deployQueued")
+      );
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.deployFailed"))
+  });
+
+  const deleteCertMutation = useMutation({
+    mutationFn: (domainIds: string[]) => api.post(`/admin/nodes/${id}/delete-certs`, { domainIds }),
+    onSuccess: (_result, domainIds) => {
+      queryClient.invalidateQueries({ queryKey: ['nodes', id] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      setPendingDeleteSelection(null);
+      setSelectedDomainIds((current) => current.filter((domainId) => !domainIds.includes(domainId)));
+      toast.success(
+        domainIds.length > 1
+          ? t("nodeDetail.bulkDeleteQueued", { count: domainIds.length })
+          : t("nodeDetail.deleteQueued")
+      );
+    },
+    onError: (err: unknown) => toast.error((err as Error).message || t("nodeDetail.deleteFailed"))
   });
 
   const assignmentMutation = useMutation({
@@ -70,9 +121,50 @@ export function NodeDetail() {
   if (isLoading) return <div className="p-8">{t("nodeDetail.loading")}</div>;
   if (!node) return <div className="p-8 text-destructive">{t("nodeDetail.notFound")}</div>;
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success(t("domains.shaCopied"));
+  const openDeleteDialog = (domainIds: string[]) => {
+    const selectedAssignments = node.assignments.filter((assignment) => domainIds.includes(assignment.domainId));
+    setPendingDeleteSelection({
+      domainIds,
+      domainNames: selectedAssignments.map((assignment) => assignment.domainName || assignment.domainId),
+    });
+  };
+
+  const toggleDomainSelection = (domainId: string, checked: boolean) => {
+    setSelectedDomainIds((current) => {
+      if (checked) {
+        return current.includes(domainId) ? current : [...current, domainId];
+      }
+      return current.filter((item) => item !== domainId);
+    });
+  };
+
+  const toggleSelectAll = (checked: boolean) => {
+    setSelectedDomainIds(checked ? allAssignedDomainIds : []);
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-1000px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error("execCommand copy failed");
+        }
+      }
+      toast.success(t("domains.shaCopied"));
+    } catch {
+      toast.error(t("nodes.copyFailed"));
+    }
   };
 
   const renderSha = (sha: string | null) => {
@@ -167,28 +259,78 @@ export function NodeDetail() {
             <CardTitle>{t("nodeDetail.assignedDomains")}</CardTitle>
             <CardDescription>{t("nodeDetail.assignedDescription")}</CardDescription>
           </div>
-          <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={openEdit}>
-            <Pencil className="mr-2 h-4 w-4" /> {t("nodeDetail.editAssignments")}
-          </Button>
+          <div className="w-full sm:w-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            {hasSelection && (
+              <>
+                <div className="flex items-center px-1 text-sm text-muted-foreground">
+                  {t("nodeDetail.selectedCount", { count: effectiveSelectedDomainIds.length })}
+                </div>
+                <Button
+                  className="w-full sm:w-auto"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => deployAssignmentMutation.mutate(effectiveSelectedDomainIds)}
+                  disabled={deployAssignmentMutation.isPending}
+                >
+                  <Download className="mr-2 h-4 w-4" /> {t("nodeDetail.bulkDeploy")}
+                </Button>
+                <Button
+                  className="w-full sm:w-auto"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openDeleteDialog(effectiveSelectedDomainIds)}
+                  disabled={deleteCertMutation.isPending}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" /> {t("nodeDetail.bulkDelete")}
+                </Button>
+                <Button className="w-full sm:w-auto" variant="ghost" size="sm" onClick={() => setSelectedDomainIds([])}>
+                  {t("nodeDetail.clearSelection")}
+                </Button>
+              </>
+            )}
+            <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={openEdit}>
+              <Pencil className="mr-2 h-4 w-4" /> {t("nodeDetail.editAssignments")}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="w-full overflow-x-auto">
-            <Table className="min-w-[720px]">
+            <Table className="min-w-[820px]">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[52px]">
+                  <input
+                    ref={selectAllRef}
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                    checked={allSelected}
+                    aria-label={t("nodeDetail.selectAllAssignments")}
+                    onChange={(event) => toggleSelectAll(event.target.checked)}
+                  />
+                </TableHead>
                 <TableHead>{t("table.domain")}</TableHead>
                 <TableHead>{t("nodeDetail.desiredSha")}</TableHead>
                 <TableHead>{t("nodeDetail.deployedSha")}</TableHead>
                 <TableHead>{t("table.status")}</TableHead>
                 <TableHead>{t("nodeDetail.lastDeploy")}</TableHead>
+                <TableHead className="w-[180px] text-right">{t("table.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {node.assignments?.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">{t("nodeDetail.noAssignments")}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">{t("nodeDetail.noAssignments")}</TableCell></TableRow>
               ) : (
                 node.assignments?.map((a) => (
                   <TableRow key={a.id}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                        checked={effectiveSelectedDomainIds.includes(a.domainId)}
+                        aria-label={t("nodeDetail.selectAssignment", { domain: a.domainName || a.domainId })}
+                        onChange={(event) => toggleDomainSelection(a.domainId, event.target.checked)}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{a.domainName || a.domainId}</TableCell>
                     <TableCell>{renderSha(a.desiredSha256)}</TableCell>
                     <TableCell>{renderSha(a.deployedSha256)}</TableCell>
@@ -199,6 +341,27 @@ export function NodeDetail() {
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
                       {a.lastDeployAt ? formatRelative(a.lastDeployAt) : t("common.never")}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => deployAssignmentMutation.mutate([a.domainId])}
+                          disabled={deployAssignmentMutation.isPending}
+                        >
+                          <Download className="mr-2 h-4 w-4" /> {t("nodeDetail.deploy")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => openDeleteDialog([a.domainId])}
+                          disabled={deleteCertMutation.isPending}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" /> {t("nodeDetail.deleteCert")}
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -242,6 +405,41 @@ export function NodeDetail() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!pendingDeleteSelection} onOpenChange={(open) => !open && setPendingDeleteSelection(null)}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {pendingDeleteSelection && pendingDeleteSelection.domainIds.length > 1
+                ? t("nodeDetail.deleteCertsTitle")
+                : t("nodeDetail.deleteCertTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingDeleteSelection
+                ? pendingDeleteSelection.domainIds.length > 1
+                  ? t("nodeDetail.deleteCertDescriptionMany", { count: pendingDeleteSelection.domainIds.length })
+                  : t("nodeDetail.deleteCertDescription", { domain: pendingDeleteSelection.domainNames[0] })
+                : t("nodeDetail.deleteCertDescriptionFallback")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDeleteSelection(null)} disabled={deleteCertMutation.isPending}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => pendingDeleteSelection && deleteCertMutation.mutate(pendingDeleteSelection.domainIds)}
+              disabled={deleteCertMutation.isPending}
+            >
+              {deleteCertMutation.isPending
+                ? t("common.deleting")
+                : pendingDeleteSelection && pendingDeleteSelection.domainIds.length > 1
+                  ? t("nodeDetail.deleteCertsConfirm")
+                  : t("nodeDetail.deleteCertConfirm")}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
-import type { CertNode } from "../types/api";
+import type { CertNode, Settings as SettingsType } from "../types/api";
 import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Badge } from "../components/ui/badge";
@@ -21,10 +21,15 @@ export function Nodes() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [newNodeToken, setNewNodeToken] = useState<string | null>(null);
+  const [newNodeCertDir, setNewNodeCertDir] = useState<string>("/etc/nginx/ssl");
 
   const { data: nodes = [], isLoading } = useQuery<CertNode[]>({
     queryKey: ['nodes'],
     queryFn: () => api.get('/admin/nodes'),
+  });
+  const { data: settings } = useQuery<SettingsType>({
+    queryKey: ['settings'],
+    queryFn: () => api.get('/admin/settings'),
   });
 
   const form = useForm({
@@ -32,10 +37,11 @@ export function Nodes() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: Record<string, string>) => api.post<{ token: string }>('/admin/nodes', data),
-    onSuccess: (data: { token: string }) => {
+    mutationFn: (data: Record<string, string>) => api.post<{ token: string; certDir?: string }>('/admin/nodes', data),
+    onSuccess: (data: { token: string; certDir?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setNewNodeToken(data.token);
+      setNewNodeCertDir(data.certDir || form.getValues("certDir") || "/etc/nginx/ssl");
       toast.success(t("nodes.added"));
     },
     onError: (err: unknown) => toast.error((err as Error).message || t("nodes.addFailed"))
@@ -55,9 +61,49 @@ export function Nodes() {
     createMutation.mutate(values);
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success(t("common.copied"));
+  const shellQuote = (value: string) => `'${value.split("'").join(`'"'"'`)}'`;
+
+  const resolvePublicBaseUrl = () => {
+    const configured = settings?.node.publicBaseUrl?.trim().replace(/\/+$/, "");
+    if (configured) {
+      return configured;
+    }
+
+    const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "/api";
+    if (apiBase.startsWith("http://") || apiBase.startsWith("https://")) {
+      return apiBase.replace(/\/api\/?$/, "").replace(/\/+$/, "");
+    }
+
+    return window.location.origin.replace(/\/+$/, "");
+  };
+
+  const installCommand = newNodeToken
+    ? `curl -fsSL ${resolvePublicBaseUrl()}/api/agent.sh | bash -s -- --token ${shellQuote(newNodeToken)} --master-url ${shellQuote(resolvePublicBaseUrl())} --cert-dir ${shellQuote(newNodeCertDir)}`
+    : "";
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-1000px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error("execCommand copy failed");
+        }
+      }
+      toast.success(t("common.copied"));
+    } catch {
+      toast.error(t("nodes.copyFailed"));
+    }
   };
 
   return (
@@ -127,6 +173,7 @@ export function Nodes() {
         setIsAddOpen(open);
         if (!open) {
           setNewNodeToken(null);
+          setNewNodeCertDir("/etc/nginx/ssl");
           form.reset();
         }
       }}>
@@ -165,12 +212,21 @@ export function Nodes() {
                   {t("nodes.commandDescription")}
                 </DialogDescription>
               </DialogHeader>
-              <div className="py-4">
+              <div className="py-4 space-y-3">
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+                  <p className="font-medium text-foreground">{t("nodes.installCommandTitle")}</p>
+                  <p>{t("nodes.installCommandHint")}</p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="node-master-url">{t("nodes.masterUrl")}</Label>
+                  <Input id="node-master-url" value={resolvePublicBaseUrl()} readOnly />
+                  <p className="text-xs text-muted-foreground">{t("nodes.masterUrlHint")}</p>
+                </div>
                 <div className="relative">
                   <pre className="p-4 rounded-lg bg-muted font-mono text-sm overflow-x-auto border">
-                    {`curl -sL ${import.meta.env.VITE_API_BASE_URL || 'http://YOUR_MASTER_IP/api'}/agent.sh | bash -s -- --token ${newNodeToken}`}
+                    {installCommand}
                   </pre>
-                  <Button size="icon" variant="secondary" className="absolute top-2 right-2" onClick={() => copyToClipboard(`curl -sL ${import.meta.env.VITE_API_BASE_URL || 'http://YOUR_MASTER_IP/api'}/agent.sh | bash -s -- --token ${newNodeToken}`)}>
+                  <Button size="icon" variant="secondary" className="absolute top-2 right-2" onClick={() => copyToClipboard(installCommand)}>
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>

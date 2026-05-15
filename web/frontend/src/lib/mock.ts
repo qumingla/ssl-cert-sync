@@ -32,6 +32,7 @@ let settings: Settings = {
   webdav: { url: 'https://dav.example.com', auth: 'user:pass' },
   telegram: { botToken: '123:abc', chatId: '-100123' },
   acme: { acmeHome: '/root/.acme.sh', stagingBase: "/tmp/acme_staging", defaultRenewDays: 20, defaultCa: 'letsencrypt', accountEmail: '' },
+  node: { publicBaseUrl: 'https://ssl.example.com' },
 };
 
 export const eventStreamSubscribers: Array<(event: SystemEvent) => void> = [];
@@ -239,7 +240,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (method === 'POST') {
         const n: CertNode = { id: `n${Date.now()}`, ...getBody(), isOnline: false, lastHeartbeatAt: null, assignedDomainsCount: 0, lastError: null };
         nodes.push(n);
-        return createResponse({ ...n, token: `eyMockToken_${n.id}` });
+        return createResponse({ ...n, token: `eyMockToken_${n.id}`, certDir: n.certDir });
       }
     }
     const nodeMatch = url.match(/\/api\/admin\/nodes\/([^\/]+)$/);
@@ -327,6 +328,96 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         }
       }, 2000);
       
+      return createResponse(newJob);
+    }
+
+    const nodeDeployMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/deploy$/);
+    if (nodeDeployMatch && method === 'POST') {
+      const id = nodeDeployMatch[1];
+      const body = getBody() as { domainIds?: string[] };
+      const targetIds = Array.isArray(body.domainIds) && body.domainIds.length > 0
+        ? body.domainIds
+        : nodeAssignments.filter((item) => item.nodeId === id).map((item) => item.domainId);
+      const targetNames = nodeAssignments
+        .filter((item) => item.nodeId === id && targetIds.includes(item.domainId))
+        .map((item) => item.domainName || item.domainId);
+      const node = nodes.find(n => n.id === id);
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: 'deploy',
+        targetId: id,
+        targetName: targetNames.length > 0 ? `${node?.name} (${targetNames.join(', ')})` : node?.name,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      setTimeout(() => {
+        nodeAssignments = nodeAssignments.map((assignment) => (
+          assignment.nodeId === id && targetIds.includes(assignment.domainId)
+            ? {
+                ...assignment,
+                deployedSha256: assignment.desiredSha256,
+                status: 'synced',
+                lastDeployAt: new Date().toISOString(),
+                lastError: null,
+              }
+            : assignment
+        ));
+        const jobIndex = jobs.findIndex(j => j.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 1200;
+        }
+      }, 1200);
+      return createResponse(newJob);
+    }
+
+    const nodeDeleteCertsMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/delete-certs$/);
+    if (nodeDeleteCertsMatch && method === 'POST') {
+      const id = nodeDeleteCertsMatch[1];
+      const body = getBody() as { domainIds?: string[] };
+      const targetIds = Array.isArray(body.domainIds) ? body.domainIds : [];
+      const targetNames = nodeAssignments
+        .filter((item) => item.nodeId === id && targetIds.includes(item.domainId))
+        .map((item) => item.domainName || item.domainId);
+      const node = nodes.find(n => n.id === id);
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: 'delete',
+        targetId: id,
+        targetName: targetNames.length > 0 ? `${node?.name} (${targetNames.join(', ')})` : node?.name,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      setTimeout(() => {
+        nodeAssignments = nodeAssignments.map((assignment) => (
+          assignment.nodeId === id && targetIds.includes(assignment.domainId)
+            ? {
+                ...assignment,
+                deployedSha256: null,
+                status: 'pending',
+                lastDeployAt: new Date().toISOString(),
+                lastError: null,
+              }
+            : assignment
+        ));
+        const jobIndex = jobs.findIndex(j => j.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 900;
+        }
+      }, 900);
       return createResponse(newJob);
     }
 

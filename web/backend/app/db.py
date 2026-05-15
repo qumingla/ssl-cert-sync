@@ -24,6 +24,9 @@ DEFAULT_SETTINGS = {
         "defaultCa": "letsencrypt",
         "accountEmail": "",
     },
+    "node": {
+        "publicBaseUrl": "",
+    },
 }
 
 

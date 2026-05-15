@@ -61,7 +61,7 @@ export interface DnsChannel {
 
 export interface Job {
   id: string;
-  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'test_dns';
+  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'delete' | 'test_dns';
   targetId: string; // domainId, nodeId, etc.
   targetName?: string;
   status: 'running' | 'success' | 'failed' | 'pending';
@@ -110,6 +110,9 @@ export interface Settings {
     defaultRenewDays: number;
     defaultCa: string;
     accountEmail: string;
+  };
+  node: {
+    publicBaseUrl: string;
   };
 }
 

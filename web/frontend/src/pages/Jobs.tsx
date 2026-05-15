@@ -57,6 +57,7 @@ export function Jobs() {
               <SelectItem value="renew">{t("jobs.type.renew")}</SelectItem>
               <SelectItem value="sync">{t("jobs.type.sync")}</SelectItem>
               <SelectItem value="deploy">{t("jobs.type.deploy")}</SelectItem>
+              <SelectItem value="delete">{t("jobs.type.delete")}</SelectItem>
             </SelectContent>
           </Select>
           <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={() => refetch()}>

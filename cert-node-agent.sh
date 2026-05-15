@@ -183,27 +183,58 @@ PY
 
     DOMAINS=()
     declare -gA DOMAIN_IDS=()
-    declare -gA DOMAIN_DESIRED_SHA=()
+    declare -gA DOMAIN_NAMES_BY_ID=()
+    ALL_DOMAIN_IDS_CSV=""
     while IFS=$'\t' read -r domain_id domain_name desired_sha _expires_at; do
         [[ -n "${domain_name}" ]] || continue
         DOMAINS+=("${domain_name}")
         DOMAIN_IDS["${domain_name}"]="${domain_id}"
-        DOMAIN_DESIRED_SHA["${domain_name}"]="${desired_sha}"
+        DOMAIN_NAMES_BY_ID["${domain_id}"]="${domain_name}"
+        if [[ -n "${ALL_DOMAIN_IDS_CSV}" ]]; then
+            ALL_DOMAIN_IDS_CSV+=","
+        fi
+        ALL_DOMAIN_IDS_CSV+="${domain_id}"
     done < "${ASSIGNMENTS_TSV}"
 }
 
 load_commands() {
     curl_node_api "GET" "/commands" "" "${COMMANDS_JSON}"
-    mapfile -t COMMAND_IDS < <(python3 - "${COMMANDS_JSON}" <<'PY'
+    mapfile -t COMMAND_ROWS < <(python3 - "${COMMANDS_JSON}" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 for item in data.get("commands", []):
-    print(item.get("id") or "")
+    payload = item.get("payload") or {}
+    domain_ids = payload.get("domainIds") or []
+    print("\t".join([
+        item.get("id") or "",
+        item.get("type") or "",
+        ",".join(domain_ids),
+    ]))
 PY
 )
 }
 
-write_runtime_config() {
+resolve_domain_names_from_ids() {
+    local domain_ids_csv="$1"
+    local result=()
+    if [[ -z "${domain_ids_csv}" ]]; then
+        return 0
+    fi
+
+    local domain_id
+    IFS=',' read -r -a _domain_ids <<< "${domain_ids_csv}"
+    for domain_id in "${_domain_ids[@]}"; do
+        [[ -n "${domain_id}" ]] || continue
+        if [[ -n "${DOMAIN_NAMES_BY_ID[${domain_id}]:-}" ]]; then
+            result+=("${DOMAIN_NAMES_BY_ID[${domain_id}]}")
+        fi
+    done
+
+    printf '%s\n' "${result[@]}"
+}
+
+write_runtime_config_for_domains() {
+    local domains=("$@")
     if [[ -z "${WEBDAV_URL}" || -z "${WEBDAV_AUTH}" ]]; then
         log "ERROR" "Master 未返回 WebDAV 配置，无法执行同步"
         return 1
@@ -211,7 +242,8 @@ write_runtime_config() {
 
     {
         printf "DOMAINS=("
-        for domain in "${DOMAINS[@]}"; do
+        local domain
+        for domain in "${domains[@]}"; do
             printf "%s " "$(shell_quote "${domain}")"
         done
         printf ")\n"
@@ -229,9 +261,65 @@ write_runtime_config() {
     chmod 600 "${RUNTIME_CONFIG}"
 }
 
-build_report() {
-    local pull_exit_code="$1"
-    python3 - "${ASSIGNMENTS_TSV}" "${CERT_BASE_DIR}" "${pull_exit_code}" > "${REPORT_JSON}" <<'PY'
+run_logged_cmd() {
+    local label="$1"
+    local cmd="$2"
+    local output
+    local status=0
+
+    output="$(eval "${cmd}" 2>&1)" || status=$?
+    if [[ -n "${output}" ]]; then
+        while IFS= read -r line; do
+            log "INFO" "[${label}] ${line}"
+        done <<< "${output}"
+    fi
+    return "${status}"
+}
+
+delete_certificates_for_domains() {
+    local domains=("$@")
+    local changed=0
+    local domain
+    for domain in "${domains[@]}"; do
+        local cert_dir="${CERT_BASE_DIR}/${domain}"
+        local key_file="${cert_dir}/${domain}.key"
+        local chain_file="${cert_dir}/${domain}.cer"
+        local sha_file="${cert_dir}/cert.sha256"
+
+        if [[ -f "${key_file}" || -f "${chain_file}" || -f "${sha_file}" ]]; then
+            rm -f "${key_file}" "${chain_file}" "${sha_file}"
+            find "${cert_dir}" -maxdepth 1 -name "*.bak.*" -delete 2>/dev/null || true
+            rmdir "${cert_dir}" 2>/dev/null || true
+            changed=1
+            log "INFO" "已删除节点本地证书: ${domain}"
+        else
+            log "INFO" "节点本地不存在证书，跳过删除: ${domain}"
+        fi
+    done
+
+    if [[ "${changed}" -eq 0 ]]; then
+        return 0
+    fi
+
+    log "INFO" "执行服务校验: ${SERVICE_TEST_CMD}"
+    if ! run_logged_cmd "服务校验" "${SERVICE_TEST_CMD}"; then
+        log "ERROR" "删除证书后服务校验失败"
+        return 1
+    fi
+
+    log "INFO" "执行服务重载: ${SERVICE_RELOAD_CMD}"
+    if ! run_logged_cmd "服务重载" "${SERVICE_RELOAD_CMD}"; then
+        log "ERROR" "删除证书后服务重载失败"
+        return 1
+    fi
+    return 0
+}
+
+build_report_for_domain_ids() {
+    local domain_ids_csv="$1"
+    local mode="$2"
+    local command_exit_code="$3"
+    python3 - "${ASSIGNMENTS_TSV}" "${CERT_BASE_DIR}" "${domain_ids_csv}" "${mode}" "${command_exit_code}" > "${REPORT_JSON}" <<'PY'
 import json
 import subprocess
 import sys
@@ -240,13 +328,17 @@ from pathlib import Path
 
 assignments_path = Path(sys.argv[1])
 cert_base_dir = Path(sys.argv[2])
-pull_exit_code = int(sys.argv[3])
+selected_ids = {item for item in sys.argv[3].split(",") if item}
+mode = sys.argv[4]
+command_exit_code = int(sys.argv[5])
 
 items = []
 for raw_line in assignments_path.read_text(encoding="utf-8").splitlines():
     if not raw_line.strip():
         continue
     domain_id, domain_name, desired_sha, _expires_at = (raw_line.split("\t") + ["", "", "", ""])[:4]
+    if selected_ids and domain_id not in selected_ids:
+        continue
     cert_dir = cert_base_dir / domain_name
     sha_file = cert_dir / "cert.sha256"
     chain_file = cert_dir / f"{domain_name}.cer"
@@ -264,15 +356,22 @@ for raw_line in assignments_path.read_text(encoding="utf-8").splitlines():
             raw_expiry = completed.stdout.strip().split("=", 1)[1].strip()
             local_expiry = datetime.strptime(raw_expiry, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
-    if deployed_sha and (not desired_sha or deployed_sha == desired_sha):
-        status = "synced"
+    if mode == "delete":
+        if deployed_sha:
+            status = "synced"
+        else:
+            status = "pending"
         last_error = None
-    elif deployed_sha:
-        status = "error" if pull_exit_code != 0 else "pending"
-        last_error = "Desired certificate SHA is not deployed on this node yet."
     else:
-        status = "error"
-        last_error = "Certificate files are missing locally."
+        if deployed_sha and (not desired_sha or deployed_sha == desired_sha):
+            status = "synced"
+            last_error = None
+        elif deployed_sha:
+            status = "error" if command_exit_code != 0 else "pending"
+            last_error = "Desired certificate SHA is not deployed on this node yet."
+        else:
+            status = "error"
+            last_error = "Certificate files are missing locally."
 
     items.append(
         {
@@ -292,16 +391,10 @@ submit_report() {
     curl_node_api "POST" "/reports" "$(cat "${REPORT_JSON}")" "${STATE_DIR}/report-response.json"
 }
 
-ack_commands() {
-    local pull_exit_code="$1"
-    local ack_status="completed"
-    local ack_error=""
-
-    if [[ "${pull_exit_code}" -ne 0 ]]; then
-        ack_status="failed"
-        ack_error="Node synchronization failed. Check ${LOG_FILE} for details."
-    fi
-
+ack_command_single() {
+    local command_id="$1"
+    local ack_status="$2"
+    local ack_error="$3"
     local payload
     payload="$(python3 - "${ack_status}" "${ack_error}" <<'PY'
 import json
@@ -309,10 +402,50 @@ import sys
 print(json.dumps({"status": sys.argv[1], "error": sys.argv[2] or None}, ensure_ascii=False))
 PY
 )"
-    for command_id in "${COMMAND_IDS[@]:-}"; do
-        [[ -n "${command_id}" ]] || continue
-        curl_node_api "POST" "/commands/${command_id}/ack" "${payload}" "${STATE_DIR}/ack-${command_id}.json"
-    done
+    curl_node_api "POST" "/commands/${command_id}/ack" "${payload}" "${STATE_DIR}/ack-${command_id}.json"
+}
+
+process_sync_command() {
+    local command_id="$1"
+    local domain_ids_csv="$2"
+    shift 2
+    local domains=("$@")
+    local command_exit_code=0
+
+    log "INFO" "执行下发命令 ${command_id}: ${domains[*]}"
+    write_runtime_config_for_domains "${domains[@]}"
+    "${PULL_SCRIPT}" --config "${RUNTIME_CONFIG}" || command_exit_code=$?
+    build_report_for_domain_ids "${domain_ids_csv}" "sync" "${command_exit_code}"
+    submit_report
+
+    if [[ "${command_exit_code}" -ne 0 ]]; then
+        ack_command_single "${command_id}" "failed" "Node synchronization failed. Check ${LOG_FILE} for details."
+        return 1
+    fi
+
+    ack_command_single "${command_id}" "completed" ""
+    return 0
+}
+
+process_delete_command() {
+    local command_id="$1"
+    local domain_ids_csv="$2"
+    shift 2
+    local domains=("$@")
+    local command_exit_code=0
+
+    log "INFO" "执行删除命令 ${command_id}: ${domains[*]}"
+    delete_certificates_for_domains "${domains[@]}" || command_exit_code=$?
+    build_report_for_domain_ids "${domain_ids_csv}" "delete" "${command_exit_code}"
+    submit_report
+
+    if [[ "${command_exit_code}" -ne 0 ]]; then
+        ack_command_single "${command_id}" "failed" "Node certificate deletion failed. Check ${LOG_FILE} for details."
+        return 1
+    fi
+
+    ack_command_single "${command_id}" "completed" ""
+    return 0
 }
 
 main() {
@@ -321,27 +454,54 @@ main() {
     load_assignments
     load_commands
 
-    if [[ ${#DOMAINS[@]} -eq 0 ]]; then
-        log "INFO" "当前节点没有分配任何域名"
-        ack_commands 0
+    if [[ ${#COMMAND_ROWS[@]} -eq 0 ]]; then
+        if [[ ${#DOMAINS[@]} -eq 0 ]]; then
+            log "INFO" "当前节点没有分配任何域名"
+        else
+            log "INFO" "当前没有待执行命令"
+        fi
         return 0
     fi
 
-    write_runtime_config
+    local overall_exit_code=0
+    local row
+    for row in "${COMMAND_ROWS[@]}"; do
+        local command_id command_type domain_ids_csv
+        IFS=$'\t' read -r command_id command_type domain_ids_csv <<< "${row}"
+        [[ -n "${command_id}" ]] || continue
 
-    local pull_exit_code=0
-    "${PULL_SCRIPT}" --config "${RUNTIME_CONFIG}" || pull_exit_code=$?
+        local selected_domain_ids_csv="${domain_ids_csv}"
+        if [[ "${command_type}" == "sync_all" ]]; then
+            selected_domain_ids_csv="${ALL_DOMAIN_IDS_CSV}"
+        fi
 
-    build_report "${pull_exit_code}"
-    submit_report
-    ack_commands "${pull_exit_code}"
+        mapfile -t selected_domains < <(resolve_domain_names_from_ids "${selected_domain_ids_csv}")
+        if [[ ${#selected_domains[@]} -eq 0 ]]; then
+            ack_command_single "${command_id}" "failed" "No matching assigned domains found on this node."
+            overall_exit_code=1
+            continue
+        fi
 
-    if [[ "${pull_exit_code}" -ne 0 ]]; then
-        log "ERROR" "节点同步失败，退出码 ${pull_exit_code}"
+        case "${command_type}" in
+            sync_all|sync_domains)
+                process_sync_command "${command_id}" "${selected_domain_ids_csv}" "${selected_domains[@]}" || overall_exit_code=1
+                ;;
+            delete_domains)
+                process_delete_command "${command_id}" "${selected_domain_ids_csv}" "${selected_domains[@]}" || overall_exit_code=1
+                ;;
+            *)
+                ack_command_single "${command_id}" "failed" "Unsupported node command type: ${command_type}"
+                overall_exit_code=1
+                ;;
+        esac
+    done
+
+    if [[ "${overall_exit_code}" -ne 0 ]]; then
+        log "ERROR" "节点命令执行完成，但存在失败项"
     else
-        log "INFO" "节点同步完成"
+        log "INFO" "节点命令执行完成"
     fi
-    return "${pull_exit_code}"
+    return "${overall_exit_code}"
 }
 
 main "$@"
