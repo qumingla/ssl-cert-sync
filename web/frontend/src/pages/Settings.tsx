@@ -29,6 +29,7 @@ export function Settings() {
     }
   });
   const selectedAcmeCa = useWatch({ control: form.control, name: "acme.defaultCa" });
+  const acmeCaLabel = selectedAcmeCa === "zerossl" ? t("settings.caZeroSsl") : t("settings.caLetsEncrypt");
 
   useEffect(() => {
     if (settings) {
@@ -148,7 +149,7 @@ export function Settings() {
               <Label htmlFor="acme.defaultCa">{t("settings.defaultCa")}</Label>
               <Select value={selectedAcmeCa || "letsencrypt"} onValueChange={(value) => form.setValue("acme.defaultCa", value ?? "letsencrypt", { shouldDirty: true })}>
                 <SelectTrigger id="acme.defaultCa" className="w-full sm:w-[240px]">
-                  <SelectValue />
+                  <SelectValue>{acmeCaLabel}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="letsencrypt">{t("settings.caLetsEncrypt")}</SelectItem>
