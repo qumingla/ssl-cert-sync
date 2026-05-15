@@ -10,7 +10,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Plus, Server, Trash, Copy } from "lucide-react";
+import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
@@ -206,34 +206,80 @@ export function Nodes() {
             </form>
           ) : (
             <>
-              <DialogHeader>
-                <DialogTitle>{t("nodes.registered")}</DialogTitle>
-                <DialogDescription>
-                  {t("nodes.commandDescription")}
-                </DialogDescription>
+              <DialogHeader className="pr-10">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <CheckCircle2 className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <DialogTitle className="text-xl">{t("nodes.registered")}</DialogTitle>
+                    <DialogDescription className="leading-6">
+                      {t("nodes.commandDescription")}
+                    </DialogDescription>
+                  </div>
+                </div>
               </DialogHeader>
-              <div className="py-4 space-y-3">
-                <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
-                  <p className="font-medium text-foreground">{t("nodes.installCommandTitle")}</p>
-                  <p>{t("nodes.installCommandHint")}</p>
+              <div className="py-4 space-y-5">
+                <div className="rounded-xl border bg-muted/30 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 text-primary">
+                      <TerminalSquare className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-medium">{t("nodes.installCommandTitle")}</p>
+                      <p className="text-sm text-muted-foreground">{t("nodes.runOnNode")}</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="node-master-url">{t("nodes.masterUrl")}</Label>
-                  <Input id="node-master-url" value={resolvePublicBaseUrl()} readOnly />
-                  <p className="text-xs text-muted-foreground">{t("nodes.masterUrlHint")}</p>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label>{t("nodes.masterUrl")}</Label>
+                    <div className="rounded-lg border bg-background px-3 py-2 font-mono text-sm break-all">
+                      <div className="flex items-start gap-2">
+                        <Globe className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span>{resolvePublicBaseUrl()}</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t("nodes.masterUrlHint")}</p>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>{t("nodes.certDir")}</Label>
+                    <div className="rounded-lg border bg-background px-3 py-2 font-mono text-sm break-all">
+                      <div className="flex items-start gap-2">
+                        <Folder className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span>{newNodeCertDir}</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="relative">
-                  <pre className="p-4 rounded-lg bg-muted font-mono text-sm overflow-x-auto border">
-                    {installCommand}
-                  </pre>
-                  <Button size="icon" variant="secondary" className="absolute top-2 right-2" onClick={() => copyToClipboard(installCommand)}>
-                    <Copy className="h-4 w-4" />
-                  </Button>
+
+                <div className="overflow-hidden rounded-xl border">
+                  <div className="flex flex-col gap-3 border-b bg-muted/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-medium">{t("nodes.installCommandTitle")}</p>
+                      <p className="text-xs text-muted-foreground">{t("nodes.installCommandHint")}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="w-full sm:w-auto shrink-0"
+                      onClick={() => copyToClipboard(installCommand)}
+                    >
+                      <Copy className="mr-2 h-4 w-4" />
+                      {t("common.copy")}
+                    </Button>
+                  </div>
+                  <div className="bg-background px-4 py-3">
+                    <code className="block whitespace-pre-wrap break-all font-mono text-sm leading-6">
+                      {installCommand}
+                    </code>
+                  </div>
                 </div>
               </div>
-              <DialogFooter>
+              <div className="flex justify-end border-t bg-muted/30 px-4 py-4 sm:px-6">
                 <Button onClick={() => setIsAddOpen(false)}>{t("nodes.done")}</Button>
-              </DialogFooter>
+              </div>
             </>
           )}
         </DialogContent>
