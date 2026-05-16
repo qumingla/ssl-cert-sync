@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { api } from "../lib/api";
 import type { Job } from "../types/api";
 import { Button } from "../components/ui/button";
@@ -31,6 +31,20 @@ export function Jobs() {
     return true;
   });
 
+  const statusFilterLabel = useMemo(() => {
+    if (statusFilter === "all") {
+      return t("jobs.allStatuses");
+    }
+    return statusLabel(statusFilter);
+  }, [statusFilter, statusLabel, t]);
+
+  const typeFilterLabel = useMemo(() => {
+    if (typeFilter === "all") {
+      return t("jobs.allTypes");
+    }
+    return jobTypeLabel(typeFilter);
+  }, [jobTypeLabel, t, typeFilter]);
+
   return (
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6 flex flex-col h-full">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
@@ -38,7 +52,7 @@ export function Jobs() {
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
           <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v || 'all')}>
             <SelectTrigger className="w-full sm:w-[140px]">
-              <SelectValue placeholder={t("table.status")} />
+              <SelectValue>{statusFilterLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{t("jobs.allStatuses")}</SelectItem>
@@ -49,7 +63,7 @@ export function Jobs() {
           </Select>
           <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v || 'all')}>
             <SelectTrigger className="w-full sm:w-[140px]">
-              <SelectValue placeholder={t("table.type")} />
+              <SelectValue>{typeFilterLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{t("jobs.allTypes")}</SelectItem>

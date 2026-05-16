@@ -175,6 +175,7 @@ export function DnsChannels() {
   };
 
   const selectedProviderInfo = PROVIDERS.find(p => p.id === provider) || PROVIDERS[0];
+  const providerLabel = selectedProviderInfo.name;
 
   return (
     <div className="p-4 sm:p-6 w-full max-w-full overflow-x-hidden space-y-4 sm:space-y-6">
@@ -246,7 +247,7 @@ export function DnsChannels() {
                 <Label htmlFor="provider">{t("table.provider")}</Label>
                 <Select value={provider} onValueChange={(val) => val && form.setValue('provider', val)}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue>{providerLabel}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {PROVIDERS.map(p => (

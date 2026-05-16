@@ -34,6 +34,7 @@ export function Settings() {
   });
   const selectedAcmeCa = useWatch({ control: form.control, name: "acme.defaultCa" });
   const acmeCaLabel = selectedAcmeCa === "zerossl" ? t("settings.caZeroSsl") : t("settings.caLetsEncrypt");
+  const languageLabel = language === "zh-CN" ? t("language.zh") : t("language.en");
 
   useEffect(() => {
     if (settings) {
@@ -156,7 +157,7 @@ export function Settings() {
           <Label htmlFor="language">{t("settings.language")}</Label>
           <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
             <SelectTrigger id="language" className="w-full sm:w-[220px]">
-              <SelectValue />
+              <SelectValue>{languageLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="zh-CN">{t("language.zh")}</SelectItem>

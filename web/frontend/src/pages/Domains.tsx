@@ -265,12 +265,10 @@ export function Domains() {
         <h1 className="text-2xl font-bold tracking-tight">{t("domains.title")}</h1>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
           <DropdownMenu>
-            <DropdownMenuTrigger>
-              <Button className="w-full sm:w-auto" variant="outline" disabled={!hasSelection || bulkActionMutation.isPending}>
+            <DropdownMenuTrigger render={<Button className="w-full sm:w-auto" variant="outline" disabled={!hasSelection || bulkActionMutation.isPending} />}>
                 <CheckSquare className="mr-2 h-4 w-4" />
                 {t("domains.bulkActions")}
                 {hasSelection ? ` (${effectiveSelectedIds.length})` : ""}
-              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => runBulkAction('issue')}>
@@ -440,11 +438,9 @@ export function Domains() {
                     </TableCell>
                     <TableCell>
                       <DropdownMenu>
-                        <DropdownMenuTrigger>
-                          <Button variant="ghost" className="h-8 w-8 p-0">
+                        <DropdownMenuTrigger render={<Button variant="ghost" className="h-8 w-8 p-0" />}>
                             <span className="sr-only">{t("common.edit")}</span>
                             <MoreHorizontal className="h-4 w-4" />
-                          </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => actionMutation.mutate({ id: d.id, action: 'issue' })}>

@@ -20,10 +20,6 @@ export function Login() {
     setError("");
 
     try {
-      // If we're not in mock mode, we would call the real login API
-      // Since backend is not implemented for auth yet, we fallback to mock behavior if needed
-      // Or we can just use fetch directly
-      
       const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -42,7 +38,6 @@ export function Login() {
       }
     } catch (err: unknown) {
       setError((err as Error).message || t("login.failed"));
-      // If VITE_USE_MOCKS wasn't true but we want to allow any login in dev:
       if (import.meta.env.DEV && import.meta.env.VITE_USE_MOCKS !== 'true') {
         console.warn('Falling back to dummy token in dev mode due to missing API');
         login('dummy_dev_token');
