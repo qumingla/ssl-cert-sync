@@ -164,6 +164,34 @@ export function Domains() {
     });
   }, [channelFilter, domains, searchTerm, statusFilter]);
 
+  const statusFilterLabel = useMemo(() => {
+    switch (statusFilter) {
+      case "all":
+        return t("domains.filterAllStatuses");
+      case "healthy":
+        return t("domains.filterHealthy");
+      case "attention":
+        return t("domains.filterAttention");
+      case "disabled":
+        return t("common.disabled");
+      case "active":
+      case "expiring":
+      case "pending":
+      case "error":
+        return statusLabel(statusFilter);
+      default:
+        return t("domains.filterAllStatuses");
+    }
+  }, [statusFilter, statusLabel, t]);
+
+  const channelFilterLabel = useMemo(() => {
+    if (channelFilter === "all") {
+      return t("domains.filterAllChannels");
+    }
+
+    return channels.find((channel) => channel.id === channelFilter)?.name ?? t("domains.filterAllChannels");
+  }, [channelFilter, channels, t]);
+
   const effectiveSelectedIds = useMemo(
     () => selectedIds.filter((id) => filteredDomains.some((domain) => domain.id === id)),
     [filteredDomains, selectedIds]
@@ -287,7 +315,7 @@ export function Domains() {
             <Label htmlFor="domain-status-filter">{t("domains.statusFilter")}</Label>
             <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value ?? "all")}>
               <SelectTrigger id="domain-status-filter" className="w-full sm:w-[220px]">
-                <SelectValue placeholder={t("domains.filterAllStatuses")} />
+                <SelectValue>{statusFilterLabel}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t("domains.filterAllStatuses")}</SelectItem>
@@ -305,7 +333,7 @@ export function Domains() {
             <Label htmlFor="domain-channel-filter">{t("domains.channelFilter")}</Label>
             <Select value={channelFilter} onValueChange={(value) => setChannelFilter(value ?? "all")}>
               <SelectTrigger id="domain-channel-filter" className="w-full sm:w-[240px]">
-                <SelectValue placeholder={t("domains.filterAllChannels")} />
+                <SelectValue>{channelFilterLabel}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">{t("domains.filterAllChannels")}</SelectItem>
