@@ -10,7 +10,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare, Info } from "lucide-react";
+import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
@@ -201,10 +201,6 @@ export function Nodes() {
                 <div className="grid gap-2">
                   <Label htmlFor="name">{t("nodes.nodeName")}</Label>
                   <Input id="name" placeholder={t("nodes.nodePlaceholder")} required {...form.register('name')} />
-                </div>
-                <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
-                  <Info className="mt-0.5 h-4 w-4 shrink-0" />
-                  <p>{t("nodes.ipAutoReported")}</p>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="certDir">{t("table.certDirectory")}</Label>
