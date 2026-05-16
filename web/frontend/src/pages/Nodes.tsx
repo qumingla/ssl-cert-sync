@@ -10,7 +10,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare } from "lucide-react";
+import { Plus, Server, Trash, Copy, CheckCircle2, Globe, Folder, TerminalSquare, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useForm } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
@@ -33,11 +33,11 @@ export function Nodes() {
   });
 
   const form = useForm({
-    defaultValues: { name: "", ip: "", certDir: "/etc/nginx/ssl" },
+    defaultValues: { name: "", certDir: "/etc/nginx/ssl" },
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: Record<string, string>) => api.post<{ token: string; certDir?: string }>('/admin/nodes', data),
+    mutationFn: (data: { name: string; certDir: string }) => api.post<{ token: string; certDir?: string }>('/admin/nodes', data),
     onSuccess: (data: { token: string; certDir?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['nodes'] });
       setNewNodeToken(data.token);
@@ -57,7 +57,7 @@ export function Nodes() {
     onError: (err: unknown) => toast.error((err as Error).message || t("nodes.deleteFailed"))
   });
 
-  const onSubmit = (values: Record<string, string>) => {
+  const onSubmit = (values: { name: string; certDir: string }) => {
     createMutation.mutate(values);
   };
 
@@ -153,7 +153,9 @@ export function Nodes() {
                         {n.name}
                       </Link>
                     </TableCell>
-                    <TableCell className="font-mono text-sm text-muted-foreground">{n.ip}</TableCell>
+                    <TableCell className="font-mono text-sm text-muted-foreground">
+                      {n.ip || t("nodes.waitingHeartbeat")}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={n.isOnline ? 'default' : 'destructive'}>
                           {n.isOnline ? t("status.online") : t("status.offline")}
@@ -200,9 +202,9 @@ export function Nodes() {
                   <Label htmlFor="name">{t("nodes.nodeName")}</Label>
                   <Input id="name" placeholder={t("nodes.nodePlaceholder")} required {...form.register('name')} />
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="ip">{t("table.ipAddress")}</Label>
-                  <Input id="ip" placeholder="192.168.1.100" required {...form.register('ip')} />
+                <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>{t("nodes.ipAutoReported")}</p>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="certDir">{t("table.certDirectory")}</Label>

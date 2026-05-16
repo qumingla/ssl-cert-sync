@@ -407,7 +407,17 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     if (url.match(new RegExp('/api/admin/nodes$'))) {
       if (method === 'GET') return createResponse(nodes);
       if (method === 'POST') {
-        const n: CertNode = { id: `n${Date.now()}`, ...getBody(), isOnline: false, lastHeartbeatAt: null, assignedDomainsCount: 0, lastError: null };
+        const body = getBody() as { name?: string; ip?: string; certDir?: string };
+        const n: CertNode = {
+          id: `n${Date.now()}`,
+          name: body.name || 'node',
+          ip: body.ip || '',
+          certDir: body.certDir || '/etc/nginx/ssl',
+          isOnline: false,
+          lastHeartbeatAt: null,
+          assignedDomainsCount: 0,
+          lastError: null,
+        };
         nodes.push(n);
         return createResponse({ ...n, token: `eyMockToken_${n.id}`, certDir: n.certDir });
       }
