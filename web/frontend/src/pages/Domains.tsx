@@ -42,6 +42,9 @@ export function Domains() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [channelFilter, setChannelFilter] = useState("all");
   const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const { data: domains = [], isLoading } = useQuery<Domain[]>({
@@ -144,19 +147,36 @@ export function Domains() {
     }
   });
 
+  const filteredDomains = useMemo(() => {
+    return domains.filter((domain) => {
+      const matchesStatus = (() => {
+        if (statusFilter === "all") return true;
+        if (statusFilter === "healthy") return domain.enabled && domain.status === "active";
+        if (statusFilter === "attention") return !domain.enabled || domain.status !== "active";
+        if (statusFilter === "disabled") return !domain.enabled;
+        return domain.enabled && domain.status === statusFilter;
+      })();
+
+      const matchesChannel = channelFilter === "all" || domain.dnsChannelId === channelFilter;
+      const matchesSearch = searchTerm.trim() === ""
+        || domain.domain.toLowerCase().includes(searchTerm.trim().toLowerCase());
+      return matchesStatus && matchesChannel && matchesSearch;
+    });
+  }, [channelFilter, domains, searchTerm, statusFilter]);
+
   const effectiveSelectedIds = useMemo(
-    () => selectedIds.filter((id) => domains.some((domain) => domain.id === id)),
-    [domains, selectedIds]
+    () => selectedIds.filter((id) => filteredDomains.some((domain) => domain.id === id)),
+    [filteredDomains, selectedIds]
   );
 
   useEffect(() => {
     if (!selectAllRef.current) {
       return;
     }
-    const total = domains.length;
+    const total = filteredDomains.length;
     const selected = effectiveSelectedIds.length;
     selectAllRef.current.indeterminate = selected > 0 && selected < total;
-  }, [domains.length, effectiveSelectedIds]);
+  }, [filteredDomains.length, effectiveSelectedIds]);
 
   const onSubmit = (values: FormValues) => {
     saveMutation.mutate(values);
@@ -177,7 +197,7 @@ export function Domains() {
     toast.success(t("domains.shaCopied"));
   };
 
-  const isAllSelected = domains.length > 0 && effectiveSelectedIds.length === domains.length;
+  const isAllSelected = filteredDomains.length > 0 && effectiveSelectedIds.length === filteredDomains.length;
   const hasSelection = effectiveSelectedIds.length > 0;
 
   const toggleSelected = (id: string) => {
@@ -185,7 +205,7 @@ export function Domains() {
   };
 
   const toggleSelectAll = () => {
-    setSelectedIds(isAllSelected ? [] : domains.map((domain) => domain.id));
+    setSelectedIds(isAllSelected ? [] : filteredDomains.map((domain) => domain.id));
   };
 
   const runBulkAction = (action: 'issue' | 'renew' | 'sync' | 'enable' | 'disable') => {
@@ -251,6 +271,58 @@ export function Domains() {
         </div>
       </div>
 
+      <div className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="grid gap-3 lg:grid-cols-3 sm:gap-4">
+          <div className="grid gap-2">
+            <Label htmlFor="domain-search">{t("domains.searchLabel")}</Label>
+            <Input
+              id="domain-search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder={t("domains.searchPlaceholder")}
+              className="w-full sm:w-[240px]"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="domain-status-filter">{t("domains.statusFilter")}</Label>
+            <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value ?? "all")}>
+              <SelectTrigger id="domain-status-filter" className="w-full sm:w-[220px]">
+                <SelectValue placeholder={t("domains.filterAllStatuses")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("domains.filterAllStatuses")}</SelectItem>
+                <SelectItem value="healthy">{t("domains.filterHealthy")}</SelectItem>
+                <SelectItem value="attention">{t("domains.filterAttention")}</SelectItem>
+                <SelectItem value="active">{t("status.active")}</SelectItem>
+                <SelectItem value="expiring">{t("status.expiring")}</SelectItem>
+                <SelectItem value="pending">{t("status.pending")}</SelectItem>
+                <SelectItem value="error">{t("status.error")}</SelectItem>
+                <SelectItem value="disabled">{t("common.disabled")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="domain-channel-filter">{t("domains.channelFilter")}</Label>
+            <Select value={channelFilter} onValueChange={(value) => setChannelFilter(value ?? "all")}>
+              <SelectTrigger id="domain-channel-filter" className="w-full sm:w-[240px]">
+                <SelectValue placeholder={t("domains.filterAllChannels")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("domains.filterAllChannels")}</SelectItem>
+                {channels.map((channel) => (
+                  <SelectItem key={channel.id} value={channel.id}>
+                    {channel.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {t("domains.filteredCount", { filtered: filteredDomains.length, total: domains.length })}
+        </p>
+      </div>
+
       {hasSelection ? (
         <div className="flex flex-col gap-2 rounded-lg border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
@@ -275,6 +347,7 @@ export function Domains() {
                     aria-label={t("domains.selectAll")}
                     checked={isAllSelected}
                     onChange={toggleSelectAll}
+                    disabled={filteredDomains.length === 0}
                     className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                   />
                 </TableHead>
@@ -291,10 +364,10 @@ export function Domains() {
             <TableBody>
               {isLoading ? (
                 <TableRow><TableCell colSpan={9} className="text-center py-8">{t("common.loading")}</TableCell></TableRow>
-              ) : domains.length === 0 ? (
-                <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">{t("domains.empty")}</TableCell></TableRow>
+              ) : filteredDomains.length === 0 ? (
+                <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">{domains.length === 0 ? t("domains.empty") : t("domains.noFilteredResults")}</TableCell></TableRow>
               ) : (
-                domains.map((d) => (
+                filteredDomains.map((d) => (
                   <TableRow key={d.id} className={!d.enabled ? "opacity-50 grayscale" : ""}>
                     <TableCell>
                         <input
