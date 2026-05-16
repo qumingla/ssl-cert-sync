@@ -102,6 +102,11 @@ if [[ -n "${REQUESTED_DOMAIN}" ]]; then
     DOMAINS=("${REQUESTED_DOMAIN}")
 fi
 
+BULK_TG_MODE=0
+if [[ ${#DOMAINS[@]} -gt 1 ]]; then
+    BULK_TG_MODE=1
+fi
+
 # ── 1. 日志函数 ───────────────────────────────────────────────────────────────
 log() {
     local level="$1"; shift
@@ -161,6 +166,16 @@ send_tg_msg() {
     else
         log "WARN" "TG 通知发送失败, HTTP ${http_code:-err}"
     fi
+}
+
+notify_domain_tg() {
+    local title="$1"
+    local body="${2:-}"
+    if [[ "${BULK_TG_MODE}" == "1" ]]; then
+        log "INFO" "批量模式已启用，跳过单域名 TG 通知: ${title}"
+        return 0
+    fi
+    send_tg_msg "${title}" "${body}"
 }
 
 # ── 3. 上传至 OpenList (WebDAV) ───────────────────────────────────────────────
@@ -383,7 +398,7 @@ process_domain() {
             log "ERROR" "[${domain}] acme.sh 申请失败 (exit ${exit_code})"
             local err_summary
             err_summary="$(tail -20 "${acme_log}" 2>/dev/null || echo '无法读取日志')"
-            send_tg_msg "🚨 [ERROR] 证书申请失败: ${domain}" \
+            notify_domain_tg "🚨 [ERROR] 证书申请失败: ${domain}" \
                 "退出码: ${exit_code}\n日志摘要:\n${err_summary}"
             return 1
         fi
@@ -408,7 +423,7 @@ process_domain() {
 
     if [[ ! -s "${key_file}" ]] || [[ ! -s "${chain_file}" ]]; then
         log "ERROR" "[${domain}] 证书文件提取失败或为空"
-        send_tg_msg "🚨 [ERROR] 证书提取失败: ${domain}" "key 或 fullchain 文件为空"
+        notify_domain_tg "🚨 [ERROR] 证书提取失败: ${domain}" "key 或 fullchain 文件为空"
         return 1
     fi
     chmod 600 "${key_file}"; chmod 644 "${chain_file}"
@@ -420,7 +435,7 @@ process_domain() {
     cert_pub="$(openssl x509 -pubkey -noout -in "${chain_file}" 2>/dev/null | sha256sum | awk '{print $1}')"
     if [[ -z "${key_pub}" ]] || [[ "${key_pub}" != "${cert_pub}" ]]; then
         log "ERROR" "[${domain}] 私钥与证书公钥不匹配，禁止上传 (key=${key_pub:0:12}... cert=${cert_pub:0:12}...)"
-        send_tg_msg "🚨 [ERROR] 证书一致性校验失败: ${domain}" "私钥与证书公钥不匹配，已中止上传"
+        notify_domain_tg "🚨 [ERROR] 证书一致性校验失败: ${domain}" "私钥与证书公钥不匹配，已中止上传"
         return 1
     fi
     log "INFO" "[${domain}] ✅ 私钥与证书一致性校验通过"
@@ -444,7 +459,7 @@ process_domain() {
 
     if [[ ${upload_failed} -eq 1 ]]; then
         log "ERROR" "[${domain}] 部分文件上传失败"
-        send_tg_msg "🚨 [ERROR] 上传失败: ${domain}" "WebDAV: ${WEBDAV_URL}/${domain}/"
+        notify_domain_tg "🚨 [ERROR] 上传失败: ${domain}" "WebDAV: ${WEBDAV_URL}/${domain}/"
         return 1
     fi
 
@@ -460,7 +475,7 @@ process_domain() {
         notify_title="🔄 [RENEW] 证书续签成功: ${domain}"
     fi
 
-    send_tg_msg "${notify_title}" \
+    notify_domain_tg "${notify_title}" \
         "到期: ${cert_expiry}
 DNS渠道: ${dns_plugin}
 SHA256: ${cert_sha256}

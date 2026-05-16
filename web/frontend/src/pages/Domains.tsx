@@ -105,6 +105,10 @@ export function Domains() {
 
   const bulkActionMutation = useMutation({
     mutationFn: async ({ ids, action }: { ids: string[]; action: 'issue' | 'renew' | 'sync' | 'enable' | 'disable' | 'delete' }) => {
+      if (action === 'issue' || action === 'renew' || action === 'sync') {
+        await api.post('/admin/domains/bulk-action', { ids, action });
+        return;
+      }
       for (const id of ids) {
         if (action === 'enable' || action === 'disable') {
           await api.patch(`/admin/domains/${id}`, { enabled: action === 'enable' });

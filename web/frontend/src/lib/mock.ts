@@ -139,6 +139,67 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         return createResponse({ success: true });
       }
     }
+    if (url.endsWith('/api/admin/domains/bulk-action') && method === 'POST') {
+      const body = getBody() as { ids?: string[]; action?: 'issue' | 'renew' | 'sync' };
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const action = body.action;
+      if (!action || ids.length === 0) {
+        return createResponse({ error: 'Invalid bulk request' }, 400);
+      }
+
+      const targetDomains = domains.filter((domain) => ids.includes(domain.id));
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: action,
+        targetId: 'bulk',
+        targetName: `${targetDomains.length} domains`,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      emitMockEvent({
+        type: 'job_started',
+        level: 'info',
+        message: `Started bulk ${action} for ${targetDomains.length} domains`,
+        payload: { jobId: newJob.id }
+      });
+
+      setTimeout(() => {
+        const jobIndex = jobs.findIndex((job) => job.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 3500;
+        }
+
+        ids.forEach((id) => {
+          const domainIndex = domains.findIndex((domain) => domain.id === id);
+          if (domainIndex === -1) return;
+          if (action === 'issue' || action === 'renew') {
+            domains[domainIndex].certSha256 = Math.random().toString(16).substring(2, 14);
+            domains[domainIndex].lastIssuedAt = new Date().toISOString();
+            domains[domainIndex].daysRemaining = 90;
+            domains[domainIndex].status = 'active';
+          }
+          if (action === 'sync') {
+            domains[domainIndex].lastSyncAt = new Date().toISOString();
+          }
+        });
+
+        emitMockEvent({
+          type: 'job_finished',
+          level: 'success',
+          message: `Completed bulk ${action} for ${targetDomains.length} domains`,
+          payload: { jobId: newJob.id }
+        });
+      }, 4000);
+
+      return createResponse(newJob);
+    }
     const domainActionMatch = url.match(/\/api\/admin\/domains\/([^/]+)\/(issue|renew|sync)$/);
     if (domainActionMatch && method === 'POST') {
       const id = domainActionMatch[1];

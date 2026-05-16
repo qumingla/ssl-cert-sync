@@ -20,6 +20,11 @@ class DomainPatch(BaseModel):
     enabled: bool | None = None
 
 
+class BulkDomainActionRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+    action: str
+
+
 class DnsChannelCreate(BaseModel):
     name: str
     provider: str

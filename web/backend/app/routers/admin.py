@@ -26,6 +26,7 @@ from ..live_ops import (
 from ..schemas import (
     AssignmentUpdate,
     BackupPayload,
+    BulkDomainActionRequest,
     DnsChannelCreate,
     DnsChannelPatch,
     DomainCreate,
@@ -183,6 +184,103 @@ async def run_domain_action(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
     finally:
         cleanup_bundle(bundle)
+
+
+@router.post("/domains/bulk-action")
+async def run_bulk_domain_action(
+    payload: BulkDomainActionRequest,
+    request: Request,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    if payload.action not in {"issue", "renew", "sync"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "Unsupported bulk domain action"})
+    if not payload.ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "No domains selected"})
+
+    unique_ids = list(dict.fromkeys(payload.ids))
+    domains_by_id: dict[str, dict[str, Any]] = {}
+    for domain_id in unique_ids:
+        row = db.query_one("SELECT * FROM domains WHERE id = ?", (domain_id,))
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": f"Domain not found: {domain_id}"})
+        domains_by_id[domain_id] = row
+
+    selected_domains = [domains_by_id[domain_id] for domain_id in unique_ids]
+    domain_names = [str(row["domain"]) for row in selected_domains]
+    target_name = (
+        f"{len(domain_names)} domains"
+        if len(domain_names) > 3
+        else ", ".join(domain_names)
+    )
+    job = create_job(db, event_hub, payload.action, "bulk", target_name)
+    append_log(db, job["id"], f"[INFO] Requested bulk {payload.action} for {len(domain_names)} domains.")
+    append_log(db, job["id"], f"[INFO] Domains: {', '.join(domain_names)}")
+
+    successes: list[str] = []
+    failures: list[tuple[str, str]] = []
+    sync_marks: list[str] = []
+
+    for row in selected_domains:
+        domain_id = str(row["id"])
+        domain_name = str(row["domain"])
+        bundle = None
+        append_log(db, job["id"], f"[INFO] ---- Processing {domain_name} ----")
+        try:
+            if payload.action == "sync":
+                bundle = extract_domain_bundle(request.app.state.config, _settings(db), domain_name)
+                append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {domain_name}")
+                upload_domain_bundle(_settings(db).get("webdav", {}), domain_name, bundle)
+                append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {domain_name}")
+                update_domain_state(db, domain_id, bundle, mark_synced=True)
+                sync_marks.append(domain_name)
+            else:
+                bundle = await run_domain_script(
+                    request.app.state.config,
+                    db,
+                    domain_id,
+                    force_reissue=True,
+                    telegram_enabled=False,
+                    line_logger=lambda line, current_domain=domain_name: append_log(
+                        db,
+                        job["id"],
+                        f"[{current_domain}] {line}",
+                    ),
+                )
+                update_domain_state(db, domain_id, bundle, mark_issued=True, mark_synced=True)
+            successes.append(domain_name)
+            append_log(db, job["id"], f"[INFO] {domain_name} completed successfully.")
+        except Exception as exc:
+            error_message = str(exc)
+            failures.append((domain_name, error_message))
+            mark_domain_error(db, domain_id, error_message)
+            append_log(db, job["id"], f"[ERROR] [{domain_name}] {error_message}")
+        finally:
+            cleanup_bundle(bundle)
+
+    append_log(
+        db,
+        job["id"],
+        f"[INFO] Bulk {payload.action} summary: success={len(successes)} failed={len(failures)} total={len(domain_names)}",
+    )
+    await _send_bulk_domain_summary(
+        db,
+        job["id"],
+        payload.action,
+        successes,
+        failures,
+        sync_marks,
+    )
+
+    if failures:
+        return finish_job(
+            db,
+            event_hub,
+            job["id"],
+            status="failed",
+            error=f"{len(failures)} domain(s) failed during bulk {payload.action}",
+        )
+    return finish_job(db, event_hub, job["id"])
 
 
 @router.get("/dns-channels")
@@ -706,6 +804,58 @@ async def test_telegram(
     append_log(db, job["id"], f"[INFO] Telegram message sent successfully. message_id={message_id or '(unknown)'}")
     finish_job(db, event_hub, job["id"])
     return {"success": True}
+
+
+async def _send_bulk_domain_summary(
+    db: Database,
+    job_id: str,
+    action: str,
+    successes: list[str],
+    failures: list[tuple[str, str]],
+    _sync_marks: list[str],
+) -> None:
+    settings = _settings(db)
+    telegram_settings = settings.get("telegram", {})
+    bot_token = str(telegram_settings.get("botToken") or "").strip()
+    chat_id = str(telegram_settings.get("chatId") or "").strip()
+    if not bot_token or not chat_id:
+        append_log(db, job_id, "[INFO] Telegram is not configured, skipped bulk summary notification.")
+        return
+
+    action_label = {
+        "issue": "批量申请",
+        "renew": "批量续签",
+        "sync": "批量同步",
+    }.get(action, action)
+    icon = "⚠️" if failures else "✅"
+    title = f"{icon} [BULK] {action_label}完成"
+
+    lines = [
+        f"动作: {action_label}",
+        f"成功: {len(successes)}",
+        f"失败: {len(failures)}",
+    ]
+    if successes:
+        success_label = "已同步" if action == "sync" else "已完成"
+        lines.append("")
+        lines.append(f"{success_label}:")
+        lines.extend(f"• {domain}" for domain in successes)
+    if failures:
+        lines.append("")
+        lines.append("失败:")
+        lines.extend(f"• {domain}: {message}" for domain, message in failures)
+    try:
+        response = await asyncio.to_thread(send_telegram_message, bot_token, chat_id, f"{title}\n\n" + "\n".join(lines))
+    except Exception as exc:
+        append_log(db, job_id, f"[WARN] Failed to send bulk Telegram summary: {exc}")
+        return
+
+    message_id = (
+        response.get("result", {}).get("message_id")
+        if isinstance(response.get("result"), dict)
+        else None
+    )
+    append_log(db, job_id, f"[INFO] Bulk Telegram summary sent successfully. message_id={message_id or '(unknown)'}")
 
 
 def _settings(db: Database) -> dict[str, Any]:

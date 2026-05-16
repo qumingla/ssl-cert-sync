@@ -81,6 +81,7 @@ async def run_domain_script(
     domain_id: str,
     *,
     force_reissue: bool = False,
+    telegram_enabled: bool = True,
     line_logger: LogWriter | None = None,
 ) -> DomainBundle:
     domain, settings, channel = _domain_context(db, domain_id)
@@ -89,7 +90,7 @@ async def run_domain_script(
         domain["domain"],
         settings,
         channel,
-        telegram_enabled=True,
+        telegram_enabled=telegram_enabled,
     )
     args = ["bash", str(config.master_script), "--config", str(runtime_config), "--domain", domain["domain"]]
     if force_reissue:
