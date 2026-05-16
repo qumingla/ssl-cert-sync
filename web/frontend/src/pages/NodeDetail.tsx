@@ -12,7 +12,7 @@ import { ArrowLeft, Play, Pencil, Activity, Download, Trash2 } from "lucide-reac
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { useI18n } from "../components/LocaleProvider";
 
 export function NodeDetail() {
@@ -106,6 +106,11 @@ export function NodeDetail() {
   const form = useForm<{ domainIds: string[] }>({
     defaultValues: { domainIds: [] }
   });
+  const editSelectedDomainIds = useWatch({
+    control: form.control,
+    name: "domainIds",
+  }) ?? [];
+  const allEditDomainsSelected = domains.length > 0 && editSelectedDomainIds.length === domains.length;
 
   const openEdit = () => {
     form.reset({
@@ -116,6 +121,14 @@ export function NodeDetail() {
 
   const onSubmit = (values: { domainIds: string[] }) => {
     assignmentMutation.mutate(values.domainIds);
+  };
+
+  const toggleEditSelectAll = () => {
+    form.setValue(
+      "domainIds",
+      allEditDomainsSelected ? [] : domains.map((domain) => domain.id),
+      { shouldDirty: true }
+    );
   };
 
   if (isLoading) return <div className="p-8">{t("nodeDetail.loading")}</div>;
@@ -383,20 +396,35 @@ export function NodeDetail() {
               {domains.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("nodeDetail.noAvailableDomains")}</p>
               ) : (
-                domains.map(d => (
-                  <div key={d.id} className="flex items-center space-x-3">
-                    <input 
-                      type="checkbox" 
-                      id={`domain-${d.id}`} 
-                      value={d.id}
-                      {...form.register('domainIds')}
-                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                    />
-                    <label htmlFor={`domain-${d.id}`} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer">
-                      {d.domain}
-                    </label>
+                <>
+                  <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-2">
+                    <p className="text-sm text-muted-foreground">
+                      {t("nodeDetail.selectedCount", { count: editSelectedDomainIds.length })}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={toggleEditSelectAll}
+                    >
+                      {allEditDomainsSelected ? t("nodeDetail.clearSelection") : t("nodeDetail.selectAllDomains")}
+                    </Button>
                   </div>
-                ))
+                  {domains.map(d => (
+                    <div key={d.id} className="flex items-center space-x-3">
+                      <input 
+                        type="checkbox" 
+                        id={`domain-${d.id}`} 
+                        value={d.id}
+                        {...form.register('domainIds')}
+                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                      />
+                      <label htmlFor={`domain-${d.id}`} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer">
+                        {d.domain}
+                      </label>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
             <DialogFooter>
