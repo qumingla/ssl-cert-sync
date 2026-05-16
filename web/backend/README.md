@@ -41,6 +41,8 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
   - `GET /api/auth/status`
   - `POST /api/auth/bootstrap`
   - `POST /api/auth/login`
+  - `GET /api/auth/account`
+  - `PATCH /api/auth/account`
 
 ## 关键环境变量
 

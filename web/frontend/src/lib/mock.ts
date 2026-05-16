@@ -176,6 +176,40 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
 
   try {
+    if (url.includes('/api/auth/account') && method === 'GET') {
+      return createResponse({ username: mockAuth.username });
+    }
+    if (url.includes('/api/auth/account') && method === 'PATCH') {
+      const { username, currentPassword, newPassword } = getBody() as {
+        username?: string;
+        currentPassword?: string;
+        newPassword?: string;
+      };
+      const trimmedUsername = typeof username === 'string' ? username.trim() : '';
+      if (!trimmedUsername) {
+        return createResponse({ error: 'Username is required' }, 400);
+      }
+      if (!currentPassword) {
+        return createResponse({ error: 'Current password is required' }, 400);
+      }
+      if (currentPassword !== mockAuth.password) {
+        return createResponse({ error: 'Current password is incorrect' }, 401);
+      }
+      if (!newPassword && trimmedUsername === mockAuth.username) {
+        return createResponse({ error: 'No account changes were provided' }, 400);
+      }
+      if (newPassword && newPassword.length < 8) {
+        return createResponse({ error: 'New password must be at least 8 characters long' }, 400);
+      }
+      mockAuth = {
+        ...mockAuth,
+        username: trimmedUsername,
+        password: typeof newPassword === 'string' && newPassword.length > 0 ? newPassword : mockAuth.password,
+      };
+      persistMockAuth();
+      return createResponse({ username: mockAuth.username });
+    }
+
     // Overview
     if (url.endsWith('/api/admin/overview') && method === 'GET') {
       return createResponse({

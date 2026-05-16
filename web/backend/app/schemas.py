@@ -13,9 +13,19 @@ class AuthStatusResponse(BaseModel):
     setupRequired: bool
 
 
+class AuthAccountResponse(BaseModel):
+    username: str
+
+
 class BootstrapRequest(BaseModel):
     username: str
     password: str
+
+
+class AccountUpdateRequest(BaseModel):
+    username: str
+    currentPassword: str
+    newPassword: str = ""
 
 
 class DomainCreate(BaseModel):

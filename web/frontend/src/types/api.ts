@@ -14,6 +14,10 @@ export interface AuthStatus {
   setupRequired: boolean;
 }
 
+export interface AuthAccount {
+  username: string;
+}
+
 export interface Domain {
   id: string;
   domain: string;

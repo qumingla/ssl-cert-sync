@@ -42,6 +42,7 @@
 #### Settings
 
 - WebDAV / Telegram / ACME 设置
+- 管理员账号密码修改
 - 中英文切换
 - 配置下载备份 / 上传恢复
 
