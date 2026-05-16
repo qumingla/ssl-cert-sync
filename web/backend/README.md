@@ -4,7 +4,7 @@
 
 ## 当前后端能力
 
-- JWT 登录认证
+- 首次安装初始化与 JWT 登录认证
 - 域名、DNS 渠道、节点、任务、事件、分配关系持久化
 - 真实执行链路：
   - DNS 渠道测试
@@ -33,12 +33,14 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 - `/api/docs`
 - `/api/redoc`
 
-## 默认登录
+## 首次安装与登录
 
-- Username: `admin`
-- Password: `admin`
-
-生产环境请通过环境变量覆盖。
+- 全新安装且数据库为空时，访问 Web 会先进入首次初始化向导，要求设置首个管理员账号密码
+- 已有运行数据的升级场景，或你已经通过环境变量提供了非占位管理员密码时，后端会自动初始化管理员信息，不会阻塞在首次向导
+- 首次初始化相关接口：
+  - `GET /api/auth/status`
+  - `POST /api/auth/bootstrap`
+  - `POST /api/auth/login`
 
 ## 关键环境变量
 
@@ -50,7 +52,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 | `SSL_SYNC_FRONTEND_DIST` | `web/frontend/dist` | 前端构建产物目录 |
 | `SSL_SYNC_SECRET_KEY` | `change-me-before-production` | JWT / token 签名密钥 |
 | `SSL_SYNC_ADMIN_USERNAME` | `admin` | 管理员用户名 |
-| `SSL_SYNC_ADMIN_PASSWORD` | `admin` | 管理员密码 |
+| `SSL_SYNC_ADMIN_PASSWORD` | `admin` | 管理员密码。全新空库且仍为占位值时，不会直接激活登录，而是进入首次初始化向导 |
 | `SSL_SYNC_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 本地开发 CORS |
 | `SSL_SYNC_MASTER_SCRIPT` | `/usr/local/bin/cert-master-sync.sh` | Master 脚本路径 |
 | `SSL_SYNC_RUNTIME_CONFIG_DIR` | `/etc/ssl-cert-sync` | 运行时域名配置目录 |

@@ -9,6 +9,11 @@ export interface ApiError {
   details?: Record<string, unknown>;
 }
 
+export interface AuthStatus {
+  initialized: boolean;
+  setupRequired: boolean;
+}
+
 export interface Domain {
   id: string;
   domain: string;

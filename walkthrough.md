@@ -6,16 +6,18 @@
 
 当前仓库已经覆盖一条完整的可运行链路：
 
-1. Master 端配置 DNS / WebDAV / Telegram / ACME
-2. 通过 Web 控制台管理域名
-3. 调用真实 `acme.sh` 申请或续签
-4. 上传证书到 WebDAV
-5. Node 端通过 API 模式注册、轮询命令、拉取证书并部署
-6. 执行结果回传 Master，统一写入任务日志并可由 Master 发送 Telegram
+1. 首次进入时完成管理员初始化向导
+2. Master 端配置 DNS / WebDAV / Telegram / ACME
+3. 通过 Web 控制台管理域名
+4. 调用真实 `acme.sh` 申请或续签
+5. 上传证书到 WebDAV
+6. Node 端通过 API 模式注册、轮询命令、拉取证书并部署
+7. 执行结果回传 Master，统一写入任务日志并可由 Master 发送 Telegram
 
 ## 2. 前端实现重点
 
 - React + TypeScript + Vite
+- 首次安装初始化向导 + 登录前鉴权状态检查
 - 路由覆盖 Dashboard / Domains / Nodes / NodeDetail / DNS Channels / Jobs / Settings
 - 中英文切换
 - Mock 模式支持完整本地联调
@@ -46,8 +48,13 @@
 ## 3. 后端实现重点
 
 - FastAPI + SQLite
+- `app_settings.auth` 持久化管理员初始化状态
 - 管理后台接口与 Node API 接口分离
 - 真实 DNS / WebDAV / Telegram 测试
+- 首次初始化接口：
+  - `/api/auth/status`
+  - `/api/auth/bootstrap`
+  - `/api/auth/login`
 - 域名批量动作接口 `/api/admin/domains/bulk-action`
 - 备份导出 `/api/admin/backup`
 - 备份恢复 `/api/admin/backup/restore`
@@ -102,6 +109,7 @@ bash -n install.sh
 建议再手动看一遍：
 
 - 域名页筛选器
+- 首次安装向导 / 登录跳转
 - 节点分配弹窗
 - 设置页语言选择
 - 节点注册后的安装命令弹窗

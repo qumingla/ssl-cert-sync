@@ -35,6 +35,47 @@ let settings: Settings = {
   node: { publicBaseUrl: 'https://ssl.example.com' },
 };
 
+const MOCK_AUTH_STORAGE_KEY = "ssl-sync-mock-auth";
+
+interface MockAuthState {
+  initialized: boolean;
+  username: string;
+  password: string;
+  token: string;
+}
+
+const mockAuthDefaults: MockAuthState = {
+  initialized: false,
+  username: "",
+  password: "",
+  token: "mock-jwt-token",
+};
+
+function loadMockAuth() {
+  try {
+    const raw = localStorage.getItem(MOCK_AUTH_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<MockAuthState>;
+    if (typeof parsed.initialized !== "boolean") {
+      return null;
+    }
+    return {
+      ...mockAuthDefaults,
+      ...parsed,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistMockAuth() {
+  localStorage.setItem(MOCK_AUTH_STORAGE_KEY, JSON.stringify(mockAuth));
+}
+
+let mockAuth = loadMockAuth() ?? { ...mockAuthDefaults };
+
 export const eventStreamSubscribers: Array<(event: SystemEvent) => void> = [];
 
 export function emitMockEvent(event: Omit<SystemEvent, 'id' | 'createdAt'>) {
@@ -87,17 +128,50 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   };
 
   // Auth
-  if (url.includes('/api/auth/login') && method === 'POST') {
+  if (url.includes('/api/auth/status') && method === 'GET') {
+    return createResponse({
+      initialized: mockAuth.initialized,
+      setupRequired: !mockAuth.initialized,
+    });
+  }
+
+  if (url.includes('/api/auth/bootstrap') && method === 'POST') {
+    if (mockAuth.initialized) {
+      return createResponse({ error: 'Initial setup has already been completed', setupRequired: false }, 409);
+    }
     const { username, password } = getBody();
-    if (username === 'admin' && password === 'admin') {
-      return createResponse({ token: 'mock-jwt-token' });
+    const trimmedUsername = typeof username === 'string' ? username.trim() : '';
+    const rawPassword = typeof password === 'string' ? password : '';
+    if (!trimmedUsername) {
+      return createResponse({ error: 'Username is required' }, 400);
+    }
+    if (rawPassword.length < 8) {
+      return createResponse({ error: 'Password must be at least 8 characters long' }, 400);
+    }
+    mockAuth = {
+      ...mockAuth,
+      initialized: true,
+      username: trimmedUsername,
+      password: rawPassword,
+    };
+    persistMockAuth();
+    return createResponse({ token: mockAuth.token });
+  }
+
+  if (url.includes('/api/auth/login') && method === 'POST') {
+    if (!mockAuth.initialized) {
+      return createResponse({ error: 'Initial setup is required', setupRequired: true }, 409);
+    }
+    const { username, password } = getBody();
+    if (username === mockAuth.username && password === mockAuth.password) {
+      return createResponse({ token: mockAuth.token });
     }
     return createResponse({ error: 'Invalid credentials' }, 401);
   }
 
   // Check auth
   const authHeader = (init?.headers as Record<string, string>)?.['Authorization'] || '';
-  if (!authHeader.startsWith('Bearer mock-jwt-token') && !url.includes('/auth/login')) {
+  if (!authHeader.startsWith(`Bearer ${mockAuth.token}`) && !url.includes('/auth/login') && !url.includes('/auth/status') && !url.includes('/auth/bootstrap')) {
     return createResponse({ error: 'Unauthorized' }, 401);
   }
 

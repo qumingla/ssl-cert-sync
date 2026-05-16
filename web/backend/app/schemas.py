@@ -8,6 +8,16 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AuthStatusResponse(BaseModel):
+    initialized: bool
+    setupRequired: bool
+
+
+class BootstrapRequest(BaseModel):
+    username: str
+    password: str
+
+
 class DomainCreate(BaseModel):
     domain: str
     dnsChannelId: str
