@@ -2,32 +2,46 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
-from datetime import timedelta
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
-from ..config import AppConfig
-from ..db import Database, dumps, loads_object
+from ..db import Database, dumps, loads_object, merged_settings
 from ..deps import get_db, get_event_hub
 from ..events import EventHub
 from ..jobs import append_log, create_job, finish_job, get_job, job_from_row
+from ..live_ops import (
+    cleanup_bundle,
+    extract_domain_bundle,
+    mark_domain_error,
+    run_domain_script,
+    test_dns_channel_live,
+    update_domain_state,
+    upload_domain_bundle,
+    webdav_probe,
+)
 from ..schemas import (
     AssignmentUpdate,
+    BackupPayload,
+    BulkDomainActionRequest,
     DnsChannelCreate,
     DnsChannelPatch,
     DomainCreate,
     DomainPatch,
+    NodeCommandRequest,
     NodeCreate,
     NodePatch,
     SettingsPayload,
+    TelegramSettings,
+    WebDavSettings,
 )
 from ..security import hash_secret, new_node_token, require_admin
 from ..serializers import public_assignment, public_dns_channel, public_domain, public_node
-from ..timeutil import iso_now, to_iso, utc_now
+from ..telegram import send_telegram_message
+from ..timeutil import iso_now
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -142,13 +156,130 @@ async def run_domain_action(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Domain not found"})
     job = create_job(db, event_hub, action, domain_id, row["domain"])
     append_log(db, job["id"], f"[INFO] Requested {action} for {row['domain']}")
-    _apply_safe_domain_action(request.app.state.config, db, job["id"], domain_id, action)
-    event_hub.publish(
-        "deploy_success" if action == "sync" else "job_finished",
-        "success",
-        f"{action} completed for {row['domain']}",
-        {"jobId": job["id"], "domainId": domain_id},
+    bundle = None
+    try:
+        if action == "sync":
+            bundle = extract_domain_bundle(request.app.state.config, _settings(db), row["domain"])
+            append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {row['domain']}")
+            upload_domain_bundle(_settings(db).get("webdav", {}), row["domain"], bundle)
+            append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {row['domain']}")
+            update_domain_state(db, domain_id, bundle, mark_synced=True)
+        else:
+            bundle = await run_domain_script(
+                request.app.state.config,
+                db,
+                domain_id,
+                force_reissue=True,
+                line_logger=lambda line: append_log(db, job["id"], line),
+            )
+            update_domain_state(db, domain_id, bundle, mark_issued=True, mark_synced=True)
+
+        append_log(db, job["id"], f"[INFO] Real {action} execution completed for {row['domain']}")
+        return finish_job(db, event_hub, job["id"])
+    except Exception as exc:
+        error_message = str(exc)
+        mark_domain_error(db, domain_id, error_message)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
+    finally:
+        cleanup_bundle(bundle)
+
+
+@router.post("/domains/bulk-action")
+async def run_bulk_domain_action(
+    payload: BulkDomainActionRequest,
+    request: Request,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    if payload.action not in {"issue", "renew", "sync"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "Unsupported bulk domain action"})
+    if not payload.ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "No domains selected"})
+
+    unique_ids = list(dict.fromkeys(payload.ids))
+    domains_by_id: dict[str, dict[str, Any]] = {}
+    for domain_id in unique_ids:
+        row = db.query_one("SELECT * FROM domains WHERE id = ?", (domain_id,))
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": f"Domain not found: {domain_id}"})
+        domains_by_id[domain_id] = row
+
+    selected_domains = [domains_by_id[domain_id] for domain_id in unique_ids]
+    domain_names = [str(row["domain"]) for row in selected_domains]
+    target_name = (
+        f"{len(domain_names)} domains"
+        if len(domain_names) > 3
+        else ", ".join(domain_names)
     )
+    job = create_job(db, event_hub, payload.action, "bulk", target_name)
+    append_log(db, job["id"], f"[INFO] Requested bulk {payload.action} for {len(domain_names)} domains.")
+    append_log(db, job["id"], f"[INFO] Domains: {', '.join(domain_names)}")
+
+    successes: list[str] = []
+    failures: list[tuple[str, str]] = []
+    sync_marks: list[str] = []
+
+    for row in selected_domains:
+        domain_id = str(row["id"])
+        domain_name = str(row["domain"])
+        bundle = None
+        append_log(db, job["id"], f"[INFO] ---- Processing {domain_name} ----")
+        try:
+            if payload.action == "sync":
+                bundle = extract_domain_bundle(request.app.state.config, _settings(db), domain_name)
+                append_log(db, job["id"], f"[INFO] Exported local certificate bundle for {domain_name}")
+                upload_domain_bundle(_settings(db).get("webdav", {}), domain_name, bundle)
+                append_log(db, job["id"], f"[INFO] Uploaded certificate bundle to WebDAV for {domain_name}")
+                update_domain_state(db, domain_id, bundle, mark_synced=True)
+                sync_marks.append(domain_name)
+            else:
+                bundle = await run_domain_script(
+                    request.app.state.config,
+                    db,
+                    domain_id,
+                    force_reissue=True,
+                    telegram_enabled=False,
+                    line_logger=lambda line, current_domain=domain_name: append_log(
+                        db,
+                        job["id"],
+                        f"[{current_domain}] {line}",
+                    ),
+                )
+                update_domain_state(db, domain_id, bundle, mark_issued=True, mark_synced=True)
+            successes.append(domain_name)
+            append_log(db, job["id"], f"[INFO] {domain_name} completed successfully.")
+        except Exception as exc:
+            error_message = str(exc)
+            failures.append((domain_name, error_message))
+            mark_domain_error(db, domain_id, error_message)
+            append_log(db, job["id"], f"[ERROR] [{domain_name}] {error_message}")
+        finally:
+            cleanup_bundle(bundle)
+
+    append_log(
+        db,
+        job["id"],
+        f"[INFO] Bulk {payload.action} summary: success={len(successes)} failed={len(failures)} total={len(domain_names)}",
+    )
+    await _send_bulk_domain_summary(
+        db,
+        job["id"],
+        payload.action,
+        successes,
+        failures,
+        sync_marks,
+    )
+
+    if failures:
+        return finish_job(
+            db,
+            event_hub,
+            job["id"],
+            status="failed",
+            error=f"{len(failures)} domain(s) failed during bulk {payload.action}",
+        )
     return finish_job(db, event_hub, job["id"])
 
 
@@ -213,6 +344,7 @@ async def delete_dns_channel(channel_id: str, db: Database = Depends(get_db)) ->
 @router.post("/dns-channels/{channel_id}/test")
 async def test_dns_channel(
     channel_id: str,
+    request: Request,
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, bool]:
@@ -220,9 +352,27 @@ async def test_dns_channel(
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "DNS channel not found"})
     job = create_job(db, event_hub, "test_dns", channel_id, channel["name"])
-    append_log(db, job["id"], "[INFO] DNS credential shape validated. Live acme.sh validation is not executed by default.")
-    finish_job(db, event_hub, job["id"])
-    return {"success": True}
+    try:
+        append_log(db, job["id"], f"[INFO] Running live DNS challenge test for channel {channel['name']}")
+        await test_dns_channel_live(
+            request.app.state.config,
+            db,
+            channel_id,
+            line_logger=lambda line: append_log(db, job["id"], line),
+        )
+        append_log(db, job["id"], "[INFO] DNS challenge test passed")
+        finish_job(db, event_hub, job["id"])
+        return {"success": True}
+    except ValueError as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message}) from exc
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
 
 
 @router.get("/nodes")
@@ -327,22 +477,27 @@ async def run_node_now(
     db: Database = Depends(get_db),
     event_hub: EventHub = Depends(get_event_hub),
 ) -> dict[str, Any]:
-    node = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
-    if node is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
-    job = create_job(db, event_hub, "deploy", node_id, node["name"])
-    append_log(db, job["id"], "[INFO] Deployment requested from Web UI.")
-    now = iso_now()
-    db.execute(
-        """
-        UPDATE node_assignments
-        SET deployed_sha256 = desired_sha256, status = 'synced', last_deploy_at = ?, updated_at = ?
-        WHERE node_id = ?
-        """,
-        (now, now, node_id),
-    )
-    event_hub.publish("deploy_success", "success", f"Deployment marked synced for {node['name']}", {"nodeId": node_id})
-    return finish_job(db, event_hub, job["id"])
+    return _queue_node_command(db, event_hub, node_id, "sync_all", [])
+
+
+@router.post("/nodes/{node_id}/deploy")
+async def deploy_node_domains(
+    node_id: str,
+    payload: NodeCommandRequest,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    return _queue_node_command(db, event_hub, node_id, "sync_domains", payload.domainIds)
+
+
+@router.post("/nodes/{node_id}/delete-certs")
+async def delete_node_domain_certs(
+    node_id: str,
+    payload: NodeCommandRequest,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, Any]:
+    return _queue_node_command(db, event_hub, node_id, "delete_domains", payload.domainIds)
 
 
 @router.get("/jobs")
@@ -382,28 +537,411 @@ async def patch_settings(payload: SettingsPayload, db: Database = Depends(get_db
     return _settings(db)
 
 
-@router.post("/settings/webdav/test")
-async def test_webdav(db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, bool]:
-    settings = _settings(db)
-    job = create_job(db, event_hub, "sync", "settings", "WebDAV")
-    url = settings["webdav"].get("url") or "(empty)"
-    append_log(db, job["id"], f"[INFO] WebDAV URL configured as: {url}")
-    append_log(db, job["id"], "[INFO] Live WebDAV request is intentionally disabled in this backend baseline.")
-    finish_job(db, event_hub, job["id"])
+@router.get("/backup")
+async def download_backup(db: Database = Depends(get_db)) -> Response:
+    exported_at = iso_now()
+    payload = {
+        "version": 1,
+        "exportedAt": exported_at,
+        "settings": _settings(db),
+        "dnsChannels": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "provider": row["provider"],
+                "credentials": loads_object(row.get("credentials_json")),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM dns_channels ORDER BY name")
+        ],
+        "domains": [
+            {
+                "id": row["id"],
+                "domain": row["domain"],
+                "enabled": bool(row["enabled"]),
+                "dnsChannelId": row["dns_channel_id"],
+                "expiresAt": row.get("expires_at"),
+                "lastIssuedAt": row.get("last_issued_at"),
+                "lastSyncAt": row.get("last_sync_at"),
+                "certSha256": row.get("cert_sha256"),
+                "status": row.get("status") or "pending",
+                "lastError": row.get("last_error"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM domains ORDER BY domain")
+        ],
+        "nodes": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "ip": row.get("ip") or "",
+                "isOnline": bool(row.get("is_online")),
+                "lastHeartbeatAt": row.get("last_heartbeat_at"),
+                "certDir": row.get("cert_dir") or "/etc/nginx/ssl",
+                "lastError": row.get("last_error"),
+                "tokenHash": row["token_hash"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM nodes ORDER BY name")
+        ],
+        "assignments": [
+            {
+                "id": row["id"],
+                "nodeId": row["node_id"],
+                "domainId": row["domain_id"],
+                "desiredSha256": row.get("desired_sha256"),
+                "deployedSha256": row.get("deployed_sha256"),
+                "status": row.get("status") or "pending",
+                "lastDeployAt": row.get("last_deploy_at"),
+                "expiresAt": row.get("expires_at"),
+                "lastError": row.get("last_error"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in db.query_all("SELECT * FROM node_assignments ORDER BY node_id, domain_id")
+        ],
+    }
+    filename = f"ssl-sync-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/backup/restore")
+async def restore_backup(
+    payload: BackupPayload,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    if payload.version != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": f"Unsupported backup version: {payload.version}"})
+
+    now = iso_now()
+    try:
+        with db.connect() as conn:
+            conn.execute("DELETE FROM jobs")
+            conn.execute("DELETE FROM events")
+            conn.execute("DELETE FROM node_assignments")
+            conn.execute("DELETE FROM nodes")
+            conn.execute("DELETE FROM domains")
+            conn.execute("DELETE FROM dns_channels")
+            conn.execute(
+                "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'settings'",
+                (dumps(payload.settings.model_dump()), now),
+            )
+            conn.executemany(
+                """
+                INSERT INTO dns_channels (id, name, provider, credentials_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.name,
+                        item.provider,
+                        dumps(item.credentials),
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.dnsChannels
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO domains
+                    (id, domain, enabled, dns_channel_id, expires_at, last_issued_at, last_sync_at, cert_sha256, status, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.domain,
+                        int(item.enabled),
+                        item.dnsChannelId,
+                        item.expiresAt,
+                        item.lastIssuedAt,
+                        item.lastSyncAt,
+                        item.certSha256,
+                        item.status,
+                        item.lastError,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.domains
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO nodes
+                    (id, name, ip, is_online, last_heartbeat_at, cert_dir, last_error, token_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.name,
+                        item.ip,
+                        int(item.isOnline),
+                        item.lastHeartbeatAt,
+                        item.certDir,
+                        item.lastError,
+                        item.tokenHash,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.nodes
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO node_assignments
+                    (id, node_id, domain_id, desired_sha256, deployed_sha256, status, last_deploy_at, expires_at, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.id,
+                        item.nodeId,
+                        item.domainId,
+                        item.desiredSha256,
+                        item.deployedSha256,
+                        item.status,
+                        item.lastDeployAt,
+                        item.expiresAt,
+                        item.lastError,
+                        item.createdAt,
+                        item.updatedAt,
+                    )
+                    for item in payload.assignments
+                ],
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": f"Failed to restore backup: {exc}"}) from exc
+
+    event_hub.publish(
+        "job_finished",
+        "warning",
+        "Configuration restored from backup",
+        {
+            "dnsChannels": len(payload.dnsChannels),
+            "domains": len(payload.domains),
+            "nodes": len(payload.nodes),
+            "assignments": len(payload.assignments),
+        },
+    )
     return {"success": True}
+
+
+@router.post("/settings/webdav/test")
+async def test_webdav(
+    payload: WebDavSettings | None = None,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    settings = payload.model_dump() if payload is not None else _settings(db).get("webdav", {})
+    job = create_job(db, event_hub, "sync", "settings", "WebDAV")
+    url = settings.get("url") or "(empty)"
+    append_log(db, job["id"], f"[INFO] WebDAV URL configured as: {url}")
+    try:
+        await asyncio.to_thread(webdav_probe, settings)
+        append_log(db, job["id"], "[INFO] Live WebDAV probe completed successfully")
+        finish_job(db, event_hub, job["id"])
+        return {"success": True}
+    except ValueError as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message}) from exc
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
 
 
 @router.post("/settings/telegram/test")
-async def test_telegram(db: Database = Depends(get_db), event_hub: EventHub = Depends(get_event_hub)) -> dict[str, bool]:
+async def test_telegram(
+    payload: TelegramSettings | None = None,
+    db: Database = Depends(get_db),
+    event_hub: EventHub = Depends(get_event_hub),
+) -> dict[str, bool]:
+    telegram_settings = payload.model_dump() if payload is not None else _settings(db).get("telegram", {})
     job = create_job(db, event_hub, "sync", "settings", "Telegram")
-    append_log(db, job["id"], "[INFO] Telegram settings accepted. Live notification is intentionally disabled in this backend baseline.")
+    bot_token = str(telegram_settings.get("botToken") or "").strip()
+    chat_id = str(telegram_settings.get("chatId") or "").strip()
+
+    if not bot_token or not chat_id:
+        error_message = "Telegram Bot Token or Chat ID is empty"
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": error_message})
+
+    append_log(db, job["id"], f"[INFO] Sending test message to chat {chat_id}")
+
+    try:
+        response = await asyncio.to_thread(
+            send_telegram_message,
+            bot_token,
+            chat_id,
+            "SSL Sync Master 测试消息：Telegram 推送已连接。",
+        )
+    except Exception as exc:
+        error_message = str(exc)
+        append_log(db, job["id"], f"[ERROR] {error_message}")
+        finish_job(db, event_hub, job["id"], status="failed", error=error_message)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={"error": error_message}) from exc
+
+    message_id = (
+        response.get("result", {}).get("message_id")
+        if isinstance(response.get("result"), dict)
+        else None
+    )
+    append_log(db, job["id"], f"[INFO] Telegram message sent successfully. message_id={message_id or '(unknown)'}")
     finish_job(db, event_hub, job["id"])
     return {"success": True}
+
+
+async def _send_bulk_domain_summary(
+    db: Database,
+    job_id: str,
+    action: str,
+    successes: list[str],
+    failures: list[tuple[str, str]],
+    _sync_marks: list[str],
+) -> None:
+    settings = _settings(db)
+    telegram_settings = settings.get("telegram", {})
+    bot_token = str(telegram_settings.get("botToken") or "").strip()
+    chat_id = str(telegram_settings.get("chatId") or "").strip()
+    if not bot_token or not chat_id:
+        append_log(db, job_id, "[INFO] Telegram is not configured, skipped bulk summary notification.")
+        return
+
+    action_label = {
+        "issue": "批量申请",
+        "renew": "批量续签",
+        "sync": "批量同步",
+    }.get(action, action)
+    icon = "⚠️" if failures else "✅"
+    title = f"{icon} [BULK] {action_label}完成"
+
+    lines = [
+        f"动作: {action_label}",
+        f"成功: {len(successes)}",
+        f"失败: {len(failures)}",
+    ]
+    if successes:
+        success_label = "已同步" if action == "sync" else "已完成"
+        lines.append("")
+        lines.append(f"{success_label}:")
+        lines.extend(f"• {domain}" for domain in successes)
+    if failures:
+        lines.append("")
+        lines.append("失败:")
+        lines.extend(f"• {domain}: {message}" for domain, message in failures)
+    try:
+        response = await asyncio.to_thread(send_telegram_message, bot_token, chat_id, f"{title}\n\n" + "\n".join(lines))
+    except Exception as exc:
+        append_log(db, job_id, f"[WARN] Failed to send bulk Telegram summary: {exc}")
+        return
+
+    message_id = (
+        response.get("result", {}).get("message_id")
+        if isinstance(response.get("result"), dict)
+        else None
+    )
+    append_log(db, job_id, f"[INFO] Bulk Telegram summary sent successfully. message_id={message_id or '(unknown)'}")
 
 
 def _settings(db: Database) -> dict[str, Any]:
     row = db.query_one("SELECT value FROM app_settings WHERE key = 'settings'")
-    return loads_object(row["value"] if row else "{}")
+    return merged_settings(row["value"] if row else "{}")
+
+
+def _queue_node_command(
+    db: Database,
+    event_hub: EventHub,
+    node_id: str,
+    command_type: str,
+    requested_domain_ids: list[str],
+) -> dict[str, Any]:
+    node_row = db.query_one("SELECT * FROM nodes WHERE id = ?", (node_id,))
+    if node_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "Node not found"})
+
+    assignment_rows = db.query_all(
+        """
+        SELECT a.domain_id, d.domain
+        FROM node_assignments a
+        JOIN domains d ON d.id = a.domain_id
+        WHERE a.node_id = ?
+        ORDER BY d.domain
+        """,
+        (node_id,),
+    )
+    assignments_by_id = {row["domain_id"]: row for row in assignment_rows}
+
+    if command_type == "sync_all":
+        domain_ids = list(assignments_by_id.keys())
+    else:
+        domain_ids = [domain_id for domain_id in requested_domain_ids if domain_id in assignments_by_id]
+
+    if not domain_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"error": "No assigned domains selected for this node"})
+
+    domain_names = [str(assignments_by_id[domain_id]["domain"]) for domain_id in domain_ids]
+    now = iso_now()
+
+    if command_type == "delete_domains":
+        job_type = "delete"
+        summary = "delete local certificates"
+    else:
+        job_type = "deploy"
+        summary = "deploy certificates"
+
+    target_name = node_row["name"] if command_type == "sync_all" else f"{node_row['name']} ({len(domain_names)} domain{'s' if len(domain_names) != 1 else ''})"
+    job = create_job(db, event_hub, job_type, node_id, target_name)
+    append_log(db, job["id"], f"[INFO] Requested to {summary} on node {node_row['name']}.")
+    append_log(db, job["id"], f"[INFO] Domains: {', '.join(domain_names)}")
+    append_log(db, job["id"], "[INFO] Command queued for the node agent poller.")
+
+    db.execute(
+        """
+        INSERT INTO node_commands
+            (id, node_id, job_id, type, payload_json, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (
+            f"cmd_{uuid4().hex}",
+            node_id,
+            job["id"],
+            command_type,
+            dumps(
+                {
+                    "jobId": job["id"],
+                    "requestedAt": now,
+                    "source": "web",
+                    "domainIds": domain_ids,
+                    "domainNames": domain_names,
+                }
+            ),
+            now,
+            now,
+        ),
+    )
+
+    event_hub.publish(
+        "job_started",
+        "info",
+        f"Node command queued for {node_row['name']}",
+        {"nodeId": node_id, "jobId": job["id"], "commandType": command_type, "domainIds": domain_ids},
+    )
+    return get_job(db, job["id"])
 
 
 def _require_domain(db: Database, domain_id: str) -> dict[str, Any]:
@@ -448,37 +986,3 @@ def _node_detail(db: Database, event_hub: EventHub, node_id: str) -> dict[str, A
         if event.get("payload", {}).get("nodeId") == node_id
     ][:10]
     return node
-
-
-def _apply_safe_domain_action(config: AppConfig, db: Database, job_id: str, domain_id: str, action: str) -> None:
-    now = iso_now()
-    if config.enable_script_exec:
-        append_log(db, job_id, f"[INFO] Script execution requested via {config.master_script}.")
-        append_log(db, job_id, "[WARN] Per-domain script execution is not enabled until cert-master-sync.sh supports a domain argument.")
-    else:
-        append_log(db, job_id, "[INFO] Safe metadata mode: set SSL_SYNC_ENABLE_SCRIPT_EXEC=1 after reviewing script integration.")
-
-    if action in {"issue", "renew"}:
-        expires = to_iso(utc_now() + timedelta(days=90))
-        fake_sha = secrets.token_hex(32)
-        db.execute(
-            """
-            UPDATE domains
-            SET cert_sha256 = ?, expires_at = ?, last_issued_at = ?, status = 'active', updated_at = ?
-            WHERE id = ?
-            """,
-            (fake_sha, expires, now, now, domain_id),
-        )
-        db.execute(
-            """
-            UPDATE node_assignments
-            SET desired_sha256 = ?, expires_at = ?, status = CASE WHEN deployed_sha256 = ? THEN 'synced' ELSE 'pending' END, updated_at = ?
-            WHERE domain_id = ?
-            """,
-            (fake_sha, expires, fake_sha, now, domain_id),
-        )
-    if action == "sync":
-        db.execute(
-            "UPDATE domains SET last_sync_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, domain_id),
-        )

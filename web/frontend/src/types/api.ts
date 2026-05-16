@@ -61,7 +61,7 @@ export interface DnsChannel {
 
 export interface Job {
   id: string;
-  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'test_dns';
+  type: 'issue' | 'renew' | 'sync' | 'deploy' | 'delete' | 'test_dns';
   targetId: string; // domainId, nodeId, etc.
   targetName?: string;
   status: 'running' | 'success' | 'failed' | 'pending';
@@ -108,5 +108,71 @@ export interface Settings {
     acmeHome: string;
     stagingBase: string;
     defaultRenewDays: number;
+    defaultCa: string;
+    accountEmail: string;
   };
+  node: {
+    publicBaseUrl: string;
+  };
+}
+
+export interface BackupDnsChannel {
+  id: string;
+  name: string;
+  provider: string;
+  credentials: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupDomain {
+  id: string;
+  domain: string;
+  enabled: boolean;
+  dnsChannelId: string;
+  expiresAt: string | null;
+  lastIssuedAt: string | null;
+  lastSyncAt: string | null;
+  certSha256: string | null;
+  status: string;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupNode {
+  id: string;
+  name: string;
+  ip: string;
+  isOnline: boolean;
+  lastHeartbeatAt: string | null;
+  certDir: string;
+  lastError: string | null;
+  tokenHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupAssignment {
+  id: string;
+  nodeId: string;
+  domainId: string;
+  desiredSha256: string | null;
+  deployedSha256: string | null;
+  status: string;
+  lastDeployAt: string | null;
+  expiresAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupPayload {
+  version: number;
+  exportedAt: string;
+  settings: Settings;
+  dnsChannels: BackupDnsChannel[];
+  domains: BackupDomain[];
+  nodes: BackupNode[];
+  assignments: BackupAssignment[];
 }

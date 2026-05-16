@@ -19,6 +19,19 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:
 
 # ── 0. 加载配置 ───────────────────────────────────────────────────────────────
 CONFIG_FILE="/etc/default/cert-node"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG_FILE="${2:?missing config path}"
+            shift 2
+            ;;
+        *)
+            echo "[FATAL] 未知参数: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "[FATAL] 配置文件不存在: ${CONFIG_FILE}" >&2
     exit 1
@@ -26,8 +39,14 @@ fi
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"
 
-: "${TG_BOT_TOKEN:?}" "${TG_CHAT_ID:?}" \
-  "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+if ! declare -p DOMAINS >/dev/null 2>&1; then
+    DOMAINS=()
+fi
+
+: "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-1}"
+TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+TG_CHAT_ID="${TG_CHAT_ID:-}"
 CERT_BASE_DIR="${CERT_BASE_DIR:-/etc/ssl/certs/acme}"
 TMP_BASE="${TMP_BASE:-/tmp/ssl_update}"
 LOG_FILE="${LOG_FILE:-/var/log/cert-node-pull.log}"
@@ -92,6 +111,16 @@ html_escape() {
 send_tg_msg() {
     local title="$1"; local body="${2:-}"
 
+    if [[ "${TELEGRAM_ENABLED}" != "1" ]]; then
+        log "INFO" "TG 已由 Master 接管，跳过节点直发: ${title}"
+        return 0
+    fi
+
+    if [[ -z "${TG_BOT_TOKEN}" || -z "${TG_CHAT_ID}" ]]; then
+        log "INFO" "TG 未配置，跳过通知: ${title}"
+        return 0
+    fi
+
     # 自动获取公网 IP 并追加到 body（带缓存避免频繁请求）
     if [[ -z "${NODE_PUBLIC_IP:-}" ]]; then
         NODE_PUBLIC_IP="$(curl -s -4 --max-time 2 ifconfig.me 2>/dev/null || echo '未知IP')"
@@ -154,22 +183,6 @@ process_domain() {
 
     install -d -m 700 "${tmp_dir}"
     log "INFO" "---- 检查域名: *.${domain} ----"
-
-    # 5a-pre. 本地证书有效期预检（剩余 > RENEW_DAYS_BEFORE 天则跳过，不请求 WebDAV）
-    local renew_days="${RENEW_DAYS_BEFORE:-7}"
-    if [[ -f "${chain_file}" ]]; then
-        local expire_epoch now_epoch days_left
-        expire_epoch=$(openssl x509 -noout -enddate -in "${chain_file}" 2>/dev/null \
-            | cut -d= -f2 | xargs -I{} date -d '{}' '+%s' 2>/dev/null || echo 0)
-        now_epoch=$(date '+%s')
-        days_left=$(( (expire_epoch - now_epoch) / 86400 ))
-        if (( days_left > renew_days )); then
-            log "INFO" "[${domain}] 本地证书剩余 ${days_left} 天 > ${renew_days} 天，跳过检查"
-            cleanup_tmp "${tmp_dir}"
-            return 2
-        fi
-        log "INFO" "[${domain}] 本地证书剩余 ${days_left} 天 ≤ ${renew_days} 天，检查远端更新"
-    fi
 
     # 5a. 预检：拉取远程 SHA256
     local remote_sha256_tmp="${tmp_dir}/remote.sha256"

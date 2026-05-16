@@ -1,77 +1,155 @@
-# SSL 证书跨服务器自动申请分发系统
-vibe coding产自用仓库
-基于 acme.sh + OpenList(WebDAV) + Systemd 的 SSL 证书自动化管理方案，支持多域名、多 DNS 供应商、多节点，全程 Telegram 实时通知。
+# SSL 证书跨服务器自动同步系统
 
+一个面向自托管场景的 SSL 证书管理系统，核心链路是：
 
-## 🏗 架构
+- Master 端统一申请 / 续签证书
+- 证书落地到 WebDAV
+- Node 端按分配关系拉取、校验、部署并重载服务
+- Web 控制台负责管理域名、DNS 渠道、节点、任务、备份与恢复
+
+当前仓库已经不是“演示骨架”，而是可以直接跑起来的一套可用系统。
+
+## 当前能力
+
+- 真实 DNS 渠道测试：调用 `acme.sh --staging`
+- 真实 WebDAV 测试：执行 `PUT / GET / DELETE`
+- 真实 Telegram 测试：直接调用 Telegram Bot API
+- 域名单个 / 批量申请、续签、同步
+- Master 端批量操作自动合并 Telegram 汇总消息
+- Node 注册、分配域名、批量下发、批量删除节点本地证书
+- Node API 模式轮询命令队列，并回传执行结果给 Master
+- 设置导出备份、上传备份恢复
+- 中英文界面切换
+- 本地 Mock 模式前端联调
+
+## 架构
 
 ```mermaid
 flowchart LR
-    subgraph MASTER["Master VPS"]
-        direction TB
-        ACME["acme.sh<br/>DNS API"]
-        ISSUE["申请 / 续期证书"]
-        VERIFY_M["私钥与证书校验"]
-        HASH_M["计算 SHA256"]
-        SYNC["cert-master-sync.sh<br/>有效期判定 / TG 汇总"]
-
-        ACME --> ISSUE --> VERIFY_M --> HASH_M --> SYNC
+    subgraph MASTER["Master"]
+        WEB["Web Console\nReact + Vite"]
+        API["FastAPI + SQLite"]
+        ACME["cert-master-sync.sh\nacme.sh"]
     end
 
-    subgraph WEBDAV["OpenList (WebDAV)"]
-        direction TB
-        DIR["/ssl/example.com/"]
-        KEY["example.com.key"]
-        CERT["example.com.cer"]
-        SHA["example.com.sha256"]
-
-        DIR --> KEY
-        DIR --> CERT
-        DIR --> SHA
+    subgraph STORAGE["WebDAV / OpenList"]
+        DAV["cert / key / sha256"]
     end
 
-    subgraph NODE["Node VPS × N"]
-        direction TB
-        TIMER["systemd timer"]
+    subgraph NODE["Node x N"]
+        AGENT["cert-node-agent.sh"]
         PULL["cert-node-pull.sh"]
-        CHECK_HASH["SHA256 校验"]
-        CHECK_KEY["RSA / ECC 公钥校验"]
-        DEPLOY["原子部署"]
-        RELOAD["nginx reload"]
-        NOTICE["TG 汇总通知"]
-
-        TIMER --> PULL --> CHECK_HASH --> CHECK_KEY --> DEPLOY --> RELOAD --> NOTICE
+        NGINX["nginx / openresty"]
     end
 
-    SYNC -- "push: key / cert / sha256" --> WEBDAV
-    WEBDAV -- "pull" --> PULL
+    WEB --> API
+    API --> ACME
+    ACME --> DAV
+    AGENT --> API
+    AGENT --> PULL
+    PULL --> DAV
+    PULL --> NGINX
 ```
 
-## 📁 文件说明
+## 仓库结构
 
-| 文件 | 部署路径 | 角色 |
-|------|---------|------|
-| `etc_default_acme-master.conf` | `/etc/default/acme-master` | Master 配置模板 |
-| `cert-master-sync.sh` | `/usr/local/bin/cert-master-sync.sh` | Master 核心脚本 |
-| `etc_default_cert-node.conf` | `/etc/default/cert-node` | Node 配置模板 |
-| `cert-node-pull.sh` | `/usr/local/bin/cert-node-pull.sh` | Node 核心脚本 |
-| `cert-puller.service` | `/etc/systemd/system/cert-puller.service` | Node Systemd 服务 |
-| `cert-puller.timer` | `/etc/systemd/system/cert-puller.timer` | Node 定时触发器 |
-| `install.sh` | 任意目录运行 | 一键安装/卸载脚本 |
-| `web/frontend/` | Master Web UI | Web 管理控制台前端 |
-| `web/backend/` | Master API | FastAPI + SQLite 管理后端 |
-| `docker-compose.yml` | Master 容器部署 | Web 控制台 Docker Compose 部署入口 |
+| 路径 | 说明 |
+| --- | --- |
+| `web/frontend` | Web 控制台前端 |
+| `web/backend` | FastAPI 后端 |
+| `cert-master-sync.sh` | Master 证书申请 / 续签 / 上传脚本 |
+| `cert-node-agent.sh` | Node API 轮询代理 |
+| `cert-node-pull.sh` | Node 实际拉取与部署脚本 |
+| `install.sh` | 传统脚本模式的一键安装 / 更新 / 卸载 |
+| `cert-puller.service` / `cert-puller.timer` | Node systemd 单元 |
+| `etc_default_acme-master.conf` | Master 脚本配置模板 |
+| `etc_default_cert-node.conf` | Node 脚本配置模板 |
 
-## 🖥 Web 管理控制台（开发中）
+## 推荐部署方式：Docker Compose（Master）
 
-已新增 Master Web 控制台骨架：
+### 1. 准备
 
-- 前端：React + TypeScript + Vite，位于 `web/frontend/`
-- 后端：FastAPI + SQLite，位于 `web/backend/`
-- 数据：默认写入 `web/backend/.data/ssl-sync.db`，Compose 模式写入 `./data/`
-- 登录：默认 `admin / admin`，生产环境必须通过环境变量修改
+```bash
+git clone <your-repo-url> ssl-sync
+cd ssl-sync
+cp .env.example .env
+```
 
-本地后端启动：
+编辑 `.env`，至少修改：
+
+```env
+SSL_SYNC_SECRET_KEY=change-me-before-production
+SSL_SYNC_ADMIN_USERNAME=admin
+SSL_SYNC_ADMIN_PASSWORD=change-this
+```
+
+### 2. 启动
+
+```bash
+docker compose up -d --build
+```
+
+默认访问地址：
+
+```text
+http://<master-ip>:8080
+```
+
+### 3. 首次进入 Web 后建议顺序
+
+1. 登录后台
+2. 打开“系统设置”
+3. 配置：
+   - WebDAV
+   - Telegram
+   - ACME Home / 默认 CA / 账户邮箱
+   - Master 对外地址（如果你走反代或域名）
+4. 新建 DNS 渠道
+5. 新建域名
+6. 执行申请 / 续签 / 同步
+7. 添加节点并复制接入命令
+
+## Node 接入（推荐走 Web 一键生成命令）
+
+在 Web 后台“节点管理”里点击“添加节点”后，会生成一条可直接在 Node 机器执行的命令，例如：
+
+```bash
+curl -fsSL https://ssl.example.com/api/agent.sh | bash -s -- \
+  --token 'node_xxx' \
+  --master-url 'https://ssl.example.com' \
+  --cert-dir '/etc/nginx/ssl'
+```
+
+这条命令会自动：
+
+- 安装 `cert-node-agent.sh` 和 `cert-node-pull.sh`
+- 写入 `/etc/default/cert-node`
+- 安装并启用 `cert-puller.service` / `cert-puller.timer`
+
+安装后可在 Node 上检查：
+
+```bash
+systemctl start cert-puller.service
+journalctl -u cert-puller -f
+```
+
+## 本地开发
+
+### 前端
+
+```bash
+cd web/frontend
+npm install
+VITE_USE_MOCKS=true npm run dev
+```
+
+默认开发地址：
+
+```text
+http://127.0.0.1:5173
+```
+
+### 后端
 
 ```bash
 cd web/backend
@@ -81,228 +159,80 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 ```
 
-Docker Compose 部署：
+## 传统脚本模式
+
+如果你不走 Web 控制台，也可以继续使用脚本模式：
 
 ```bash
-cp .env.example .env
-# 编辑 .env，至少修改 SSL_SYNC_SECRET_KEY 和 SSL_SYNC_ADMIN_PASSWORD
+bash install.sh
+```
+
+支持：
+
+- 安装 Master
+- 安装 Node
+- 更新脚本 / 配置
+- 卸载
+
+相关配置文件：
+
+- `/etc/default/acme-master`
+- `/etc/default/cert-node`
+
+## 常用命令
+
+### Master
+
+```bash
+docker compose logs -f ssl-sync-master
 docker compose up -d --build
 ```
 
-访问：
-
-```text
-http://<master-ip>:8080
-```
-
-> 当前后端默认运行在安全元数据模式：Web UI 的申请/续签/同步会写入 SQLite 状态和任务日志，但不会直接执行 acme.sh。后续会在 `cert-master-sync.sh` 支持单域名参数后，通过 `SSL_SYNC_ENABLE_SCRIPT_EXEC=1` 接入真实脚本执行。
-
-## 🌐 多 DNS 供应商支持
-
-系统原生支持 acme.sh 提供的所有 DNS 供应商 (150+种)，支持**全局默认**与**按域名独立分配**，例如：`example.com` 使用阿里云，同时 `app.io` 使用腾讯云。
-
-| 常用供应商 | DNS 插件 (`DNS_PROVIDER`) | 所需 API 凭证 |
-|-----------|------------------------|--------------|
-| Cloudflare | `dns_cf` | `CF_Token` |
-| 阿里云 | `dns_ali` | `Ali_Key` / `Ali_Secret` |
-| 腾讯云 | `dns_tencent` | `Tencent_SecretId` / `Tencent_SecretKey` |
-| 华为云 | `dns_huaweicloud` | `HUAWEICLOUD_USERNAME` / `PASSWORD` / `DOMAIN` |
-| DNSPod(旧) | `dns_dp` | `DP_Id` / `DP_Key` |
-| GoDaddy | `dns_gd` | `GD_Key` / `GD_Secret` |
-| 其他类目 | 任意 `dns_xx` | 查阅 [acme.sh wiki](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) |
-
-## 🚀 快速部署
-
-### 前置条件
-
-- Debian 12（其他 systemd 发行版同理）
-- Master: 已安装 [acme.sh](https://github.com/acmesh-official/acme.sh)，且域名由支持的 DNS 供应商解析（如 Cloudflare、阿里云、腾讯云等）
-- OpenList 实例，已开启 WebDAV
-- Telegram Bot Token 和 Chat ID
-
-### Master 端
+### Node
 
 ```bash
-# 1. 安装 acme.sh（跳过已安装的）
-curl https://get.acme.sh | sh -s email=your@email.com
-
-# 2. 切换默认 CA 为 Let's Encrypt（推荐）
-~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-
-# 3. 克隆本仓库并安装（推荐使用交互式向导）
-git clone https://github.com/yourname/ssl-cert-sync && cd ssl-cert-sync
-bash install.sh
-# （在菜单中选择 "1) 安装 Master 端"）
-
-# 4. 填写配置
-nano /etc/default/acme-master
-# → DNS_PROVIDER 以及对应 API 凭证 (如 dns_cf 与 CF_Token), 支持按域名覆盖分配
-# → TG_BOT_TOKEN, TG_CHAT_ID
-# → WEBDAV_URL, WEBDAV_AUTH（末尾不带斜杠）
-# → DOMAINS=("example.com" "another.org" ...)
-# → RENEW_DAYS_BEFORE=7（可选，证书剩余天数 ≤ 该值时才续签，防限流）
-
-# 5. 首次手动运行
-bash /usr/local/bin/cert-master-sync.sh
-
-# 6. 设置定时（每天凌晨 2:30）
-# 参考 README 定时配置部分
-```
-
-### Node 端（每台 VPS 重复此步骤）
-
-```bash
-# 1. 安装
-cd ssl-cert-sync
-bash install.sh
-# （在菜单中选择 "2) 安装 Node 端"）
-
-# 2. 填写配置
-nano /etc/default/cert-node
-# → DOMAINS=()（与 Master 一致）
-# → WEBDAV_URL, WEBDAV_AUTH（只读账户）
-# → TG_BOT_TOKEN, TG_CHAT_ID
-# → CERT_BASE_DIR（末尾不带斜杠，如 /etc/nginx/ssl）
-# → SERVICE_TEST_CMD / SERVICE_RELOAD_CMD
-
-# 3. 立即测试
+systemctl status cert-puller.timer --no-pager
 systemctl start cert-puller.service
-journalctl -u cert-puller -f
+journalctl -u cert-puller -n 100 -f
 ```
 
-### Nginx 证书路径配置
-
-证书按域名命名并存放在子目录下：
-
-```nginx
-ssl_certificate     /etc/nginx/ssl/example.com/example.com.cer;
-ssl_certificate_key /etc/nginx/ssl/example.com/example.com.key;
-```
-
-### 更新配置
-
-如果在部署后修改了配置模板（如增删域名、更换 TG Bot Token 等），可通过脚本直接更新配置（会将本目录的文件覆盖至 `/etc/default/`）：
+### 前端校验
 
 ```bash
-bash install.sh
-# （在交互菜单中选择 3 或 4 进行配置更新）
-
-# 或者直接使用命令行：
-bash install.sh update_config master
-bash install.sh update_config node
+cd web/frontend
+npm run lint
+npm run build
 ```
 
-### 卸载系统
-
-如果需要卸载系统组件，可重新运行脚本：
+### 后端校验
 
 ```bash
-bash install.sh
-# （在交互菜单中选择 5 或 6 进行卸载）
-
-# 或者直接使用命令行：
-bash install.sh uninstall master
-bash install.sh uninstall node
+python3 -m compileall web/backend/app
+bash -n cert-master-sync.sh
+bash -n cert-node-agent.sh
+bash -n cert-node-pull.sh
+bash -n install.sh
 ```
 
----
+## 存储与运行时目录
 
-## ⏰ 定时配置（Master）
+Docker Compose 默认挂载：
 
-```bash
-# 方式 A: Cron（每天 2:30）
-crontab -e
-# 加入: 30 2 * * * /usr/local/bin/cert-master-sync.sh >> /var/log/cert-master-sync.log 2>&1
+- `./data` -> `/var/lib/ssl-cert-sync`
+- `./logs` -> `/var/log/ssl-cert-sync`
+- `./config` -> `/etc/ssl-cert-sync`
+- `${HOME}/.acme.sh` -> `/root/.acme.sh`
 
-# 方式 B: Systemd Timer（推荐）
-cat > /etc/systemd/system/cert-master-sync.service << 'EOF'
-[Unit]
-Description=SSL Cert Master Sync
-After=network-online.target
-[Service]
-Type=oneshot
-EnvironmentFile=-/etc/default/acme-master
-ExecStart=/usr/local/bin/cert-master-sync.sh
-SyslogIdentifier=cert-master-sync
-EOF
+后端镜像内已内置 `acme.sh` 到 `/opt/acme.sh`。如果挂载进来的 `ACME Home` 为空，系统会自动补齐，不需要先手工安装。
 
-cat > /etc/systemd/system/cert-master-sync.timer << 'EOF'
-[Unit]
-Description=SSL Cert Master Sync Timer
-[Timer]
-OnCalendar=*-*-* 02:30:00
-RandomizedDelaySec=10min
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
+## 已知边界
 
-systemctl daemon-reload && systemctl enable --now cert-master-sync.timer
-```
+- Node 端不是服务端主动推送，而是 `systemd timer` 轮询命令队列
+- 默认轮询频率是 2 分钟一次，`Run Now / 下发 / 删除证书` 会在下一轮尽快落地
+- 当前没有完整的自动化端到端测试，合并前建议至少跑一遍文末的校验命令
 
-Node 端 Timer 由 `install.sh node` 自动安装启用（`cert-puller.timer`，每 24h + 随机 0~30min 偏移）。
+## 文档索引
 
----
-
-## 🔐 安全特性
-
-| 特性 | 实现方式 |
-|------|---------|
-| 敏感配置文件权限 | 脚本直接 `source` 权限为 600 的 `/etc/default/...` |
-| 私钥权限 | `install -m 600` |
-| 证书目录权限 | `chmod 700 ${CERT_BASE_DIR}` |
-| 配置文件权限 | `chmod 600 /etc/default/...` |
-| 临时文件安全擦除 | `shred -u` |
-| 私有临时目录 | systemd `PrivateTmp=yes` |
-| 双重证书校验 | SHA256 完整性 + 公钥一致性（RSA/ECC 通用） |
-| 自动回滚 | `nginx -t` 失败时恢复最新备份 |
-
----
-
-## 🔧 常用命令
-
-```bash
-# Node: 查看服务日志
-journalctl -u cert-puller -n 50 --no-pager
-
-# Node: 查看 Timer 下次执行时间
-systemctl list-timers cert-puller.timer
-
-# Node: 手动触发拉取
-systemctl start cert-puller.service
-
-# Master: 查看日志
-tail -n 50 /var/log/cert-master-sync.log
-
-# 检查证书到期时间
-openssl x509 -noout -enddate -in /etc/nginx/ssl/example.com/example.com.cer
-
-# 切换 CA 后强制重新申请（临时）
-# 在 /etc/default/acme-master 末尾加: FORCE_REISSUE="1"
-# 完成后注释掉
-```
-
----
-
-## ⚠️ 注意事项
-
-> [!IMPORTANT]
-> **WEBDAV_URL** 和 **CERT_BASE_DIR** 末尾**不要带斜杠**，否则路径会出现双斜杠错误。
-
-> [!IMPORTANT]
-> Master 端会自动读取本地证书有效期，若**剩余时间 > 7 天**则完全跳过该域名（不调用 API），有效防止 Let's Encrypt 频率限制 (429 Rate Limited)。Node 端也具备完全对称的机制，本地证书剩余 > 7 天则连 WebDAV 都不请求。
-
-> [!IMPORTANT]
-> `<domain>.sha256` 最后上传，确保 Node 读到新 hash 时证书文件已就绪（防竞态）。
-
-> [!TIP]
-> **TG 通知静默与标识**：不论 Master 还是 Node，如果所有域名都未更新（被跳过），脚本会完全静默不发送通知。有更新或报错时才会通知。另外，所有通知默认会在末尾附带发送端机器的**公网 IP 和[角色]标识**，方便在多节点下快速区分服务器。
-
-> [!TIP]
-> Node 服务重载**仅在至少一个域名证书更新后**才执行，且只执行一次。无更新时完全静默退出，零 nginx 抖动。
-
-> [!WARNING]
-> Node 端 WebDAV 账户建议设置为**只读**权限，Master 端账户才需要写权限。
-
-> [!NOTE]
-> 证书校验使用 `openssl pkey -pubout` 提取公钥比对，兼容 RSA 和 ECC/ECDSA（acme.sh 默认 ECC）。
+- [前端说明](./web/frontend/README.md)
+- [后端说明](./web/backend/README.md)
+- [实现 walkthrough](./walkthrough.md)

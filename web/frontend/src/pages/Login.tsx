@@ -4,9 +4,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
 import { Server } from "lucide-react";
+import { useI18n } from "../components/LocaleProvider";
 
 export function Login() {
   const { login } = useAuth();
+  const { t } = useI18n();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -18,10 +20,6 @@ export function Login() {
     setError("");
 
     try {
-      // If we're not in mock mode, we would call the real login API
-      // Since backend is not implemented for auth yet, we fallback to mock behavior if needed
-      // Or we can just use fetch directly
-      
       const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -29,18 +27,17 @@ export function Login() {
       });
 
       if (!res.ok) {
-        throw new Error('Invalid credentials');
+        throw new Error(t("login.invalidCredentials"));
       }
 
       const data = await res.json();
       if (data.token) {
         login(data.token);
       } else {
-        throw new Error('Invalid token response');
+        throw new Error(t("login.invalidToken"));
       }
     } catch (err: unknown) {
-      setError((err as Error).message || 'Login failed');
-      // If VITE_USE_MOCKS wasn't true but we want to allow any login in dev:
+      setError((err as Error).message || t("login.failed"));
       if (import.meta.env.DEV && import.meta.env.VITE_USE_MOCKS !== 'true') {
         console.warn('Falling back to dummy token in dev mode due to missing API');
         login('dummy_dev_token');
@@ -59,9 +56,9 @@ export function Login() {
               <Server className="w-8 h-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl tracking-tight">SSL Sync Master</CardTitle>
+          <CardTitle className="text-2xl tracking-tight">{t("app.name")}</CardTitle>
           <CardDescription>
-            Enter your credentials to access the admin console
+            {t("login.description")}
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
@@ -74,7 +71,7 @@ export function Login() {
             <div className="space-y-2">
               <Input
                 id="username"
-                placeholder="Username"
+                placeholder={t("login.username")}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
@@ -84,7 +81,7 @@ export function Login() {
               <Input
                 id="password"
                 type="password"
-                placeholder="Password"
+                placeholder={t("login.password")}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -93,7 +90,7 @@ export function Login() {
           </CardContent>
           <CardFooter>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
+              {loading ? t("login.signingIn") : t("login.signIn")}
             </Button>
           </CardFooter>
         </form>

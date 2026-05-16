@@ -1,5 +1,5 @@
 [Unit]
-Description=SSL Certificate Puller - Pull and deploy cert from OpenList
+Description=SSL Certificate Node Agent - Sync and report cert state
 Documentation=man:cert-node-pull(8)
 After=network-online.target
 Wants=network-online.target
@@ -9,7 +9,7 @@ Type=simple
 # 配置文件包含 Bash 数组，不能作为 systemd EnvironmentFile 解析。
 # cert-node-pull.sh 会自行 source /etc/default/cert-node。
 
-ExecStart=/usr/local/bin/cert-node-pull.sh
+ExecStart=/usr/local/bin/cert-node-agent.sh
 
 # 安全加固
 User=root

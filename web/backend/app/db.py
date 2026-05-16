@@ -21,6 +21,11 @@ DEFAULT_SETTINGS = {
         "acmeHome": "/root/.acme.sh",
         "stagingBase": "/tmp/acme_staging",
         "defaultRenewDays": 7,
+        "defaultCa": "letsencrypt",
+        "accountEmail": "",
+    },
+    "node": {
+        "publicBaseUrl": "",
     },
 }
 
@@ -45,6 +50,14 @@ class Database:
                     "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
                     ("settings", json.dumps(DEFAULT_SETTINGS), iso_now()),
                 )
+            else:
+                merged = _merge_defaults(DEFAULT_SETTINGS, loads_object(existing["value"]))
+                serialized = dumps(merged)
+                if serialized != existing["value"]:
+                    conn.execute(
+                        "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'settings'",
+                        (serialized, iso_now()),
+                    )
 
     def query_all(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -74,6 +87,27 @@ def loads_object(value: str | None) -> dict[str, Any]:
         return {}
     parsed = json.loads(value)
     return parsed if isinstance(parsed, dict) else {}
+
+
+def merged_settings(value: str | None) -> dict[str, Any]:
+    return _merge_defaults(DEFAULT_SETTINGS, loads_object(value))
+
+
+def _merge_defaults(defaults: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, default_value in defaults.items():
+        current_value = current.get(key)
+        if isinstance(default_value, dict) and isinstance(current_value, dict):
+            merged[key] = _merge_defaults(default_value, current_value)
+        elif key in current:
+            merged[key] = current_value
+        else:
+            merged[key] = default_value
+
+    for key, current_value in current.items():
+        if key not in merged:
+            merged[key] = current_value
+    return merged
 
 
 SCHEMA = """
@@ -136,6 +170,22 @@ CREATE TABLE IF NOT EXISTS node_assignments (
     UNIQUE (node_id, domain_id),
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS node_commands (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    job_id TEXT,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    acked_at TEXT,
+    completed_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS jobs (

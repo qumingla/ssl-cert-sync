@@ -31,7 +31,8 @@ const jobs: Job[] = [
 let settings: Settings = {
   webdav: { url: 'https://dav.example.com', auth: 'user:pass' },
   telegram: { botToken: '123:abc', chatId: '-100123' },
-  acme: { acmeHome: '/root/.acme.sh', stagingBase: "/tmp/acme_staging", defaultRenewDays: 20 },
+  acme: { acmeHome: '/root/.acme.sh', stagingBase: "/tmp/acme_staging", defaultRenewDays: 20, defaultCa: 'letsencrypt', accountEmail: '' },
+  node: { publicBaseUrl: 'https://ssl.example.com' },
 };
 
 export const eventStreamSubscribers: Array<(event: SystemEvent) => void> = [];
@@ -138,6 +139,67 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         return createResponse({ success: true });
       }
     }
+    if (url.endsWith('/api/admin/domains/bulk-action') && method === 'POST') {
+      const body = getBody() as { ids?: string[]; action?: 'issue' | 'renew' | 'sync' };
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const action = body.action;
+      if (!action || ids.length === 0) {
+        return createResponse({ error: 'Invalid bulk request' }, 400);
+      }
+
+      const targetDomains = domains.filter((domain) => ids.includes(domain.id));
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: action,
+        targetId: 'bulk',
+        targetName: `${targetDomains.length} domains`,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      emitMockEvent({
+        type: 'job_started',
+        level: 'info',
+        message: `Started bulk ${action} for ${targetDomains.length} domains`,
+        payload: { jobId: newJob.id }
+      });
+
+      setTimeout(() => {
+        const jobIndex = jobs.findIndex((job) => job.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 3500;
+        }
+
+        ids.forEach((id) => {
+          const domainIndex = domains.findIndex((domain) => domain.id === id);
+          if (domainIndex === -1) return;
+          if (action === 'issue' || action === 'renew') {
+            domains[domainIndex].certSha256 = Math.random().toString(16).substring(2, 14);
+            domains[domainIndex].lastIssuedAt = new Date().toISOString();
+            domains[domainIndex].daysRemaining = 90;
+            domains[domainIndex].status = 'active';
+          }
+          if (action === 'sync') {
+            domains[domainIndex].lastSyncAt = new Date().toISOString();
+          }
+        });
+
+        emitMockEvent({
+          type: 'job_finished',
+          level: 'success',
+          message: `Completed bulk ${action} for ${targetDomains.length} domains`,
+          payload: { jobId: newJob.id }
+        });
+      }, 4000);
+
+      return createResponse(newJob);
+    }
     const domainActionMatch = url.match(/\/api\/admin\/domains\/([^/]+)\/(issue|renew|sync)$/);
     if (domainActionMatch && method === 'POST') {
       const id = domainActionMatch[1];
@@ -239,7 +301,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (method === 'POST') {
         const n: CertNode = { id: `n${Date.now()}`, ...getBody(), isOnline: false, lastHeartbeatAt: null, assignedDomainsCount: 0, lastError: null };
         nodes.push(n);
-        return createResponse({ ...n, token: `eyMockToken_${n.id}` });
+        return createResponse({ ...n, token: `eyMockToken_${n.id}`, certDir: n.certDir });
       }
     }
     const nodeMatch = url.match(/\/api\/admin\/nodes\/([^\/]+)$/);
@@ -330,6 +392,96 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       return createResponse(newJob);
     }
 
+    const nodeDeployMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/deploy$/);
+    if (nodeDeployMatch && method === 'POST') {
+      const id = nodeDeployMatch[1];
+      const body = getBody() as { domainIds?: string[] };
+      const targetIds = Array.isArray(body.domainIds) && body.domainIds.length > 0
+        ? body.domainIds
+        : nodeAssignments.filter((item) => item.nodeId === id).map((item) => item.domainId);
+      const targetNames = nodeAssignments
+        .filter((item) => item.nodeId === id && targetIds.includes(item.domainId))
+        .map((item) => item.domainName || item.domainId);
+      const node = nodes.find(n => n.id === id);
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: 'deploy',
+        targetId: id,
+        targetName: targetNames.length > 0 ? `${node?.name} (${targetNames.join(', ')})` : node?.name,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      setTimeout(() => {
+        nodeAssignments = nodeAssignments.map((assignment) => (
+          assignment.nodeId === id && targetIds.includes(assignment.domainId)
+            ? {
+                ...assignment,
+                deployedSha256: assignment.desiredSha256,
+                status: 'synced',
+                lastDeployAt: new Date().toISOString(),
+                lastError: null,
+              }
+            : assignment
+        ));
+        const jobIndex = jobs.findIndex(j => j.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 1200;
+        }
+      }, 1200);
+      return createResponse(newJob);
+    }
+
+    const nodeDeleteCertsMatch = url.match(/\/api\/admin\/nodes\/([^/]+)\/delete-certs$/);
+    if (nodeDeleteCertsMatch && method === 'POST') {
+      const id = nodeDeleteCertsMatch[1];
+      const body = getBody() as { domainIds?: string[] };
+      const targetIds = Array.isArray(body.domainIds) ? body.domainIds : [];
+      const targetNames = nodeAssignments
+        .filter((item) => item.nodeId === id && targetIds.includes(item.domainId))
+        .map((item) => item.domainName || item.domainId);
+      const node = nodes.find(n => n.id === id);
+      const newJob: Job = {
+        id: `j${Date.now()}`,
+        type: 'delete',
+        targetId: id,
+        targetName: targetNames.length > 0 ? `${node?.name} (${targetNames.join(', ')})` : node?.name,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        error: null
+      };
+      jobs.unshift(newJob);
+
+      setTimeout(() => {
+        nodeAssignments = nodeAssignments.map((assignment) => (
+          assignment.nodeId === id && targetIds.includes(assignment.domainId)
+            ? {
+                ...assignment,
+                deployedSha256: null,
+                status: 'pending',
+                lastDeployAt: new Date().toISOString(),
+                lastError: null,
+              }
+            : assignment
+        ));
+        const jobIndex = jobs.findIndex(j => j.id === newJob.id);
+        if (jobIndex > -1) {
+          jobs[jobIndex].status = 'success';
+          jobs[jobIndex].endedAt = new Date().toISOString();
+          jobs[jobIndex].durationMs = 900;
+        }
+      }, 900);
+      return createResponse(newJob);
+    }
+
     // Jobs
     if (url.match(new RegExp('/api/admin/jobs$')) && method === 'GET') {
       return createResponse(jobs);
@@ -352,6 +504,73 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     }
 
     // Settings
+    if (url.endsWith('/api/admin/backup') && method === 'GET') {
+      return createResponse({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        settings,
+        dnsChannels: channels.map((channel) => ({ ...channel, updatedAt: channel.createdAt })),
+        domains: domains.map((domain) => ({
+          ...domain,
+          lastError: null,
+          createdAt: domain.lastIssuedAt ?? new Date().toISOString(),
+          updatedAt: domain.lastSyncAt ?? new Date().toISOString(),
+        })),
+        nodes: nodes.map((node) => ({
+          id: node.id,
+          name: node.name,
+          ip: node.ip,
+          isOnline: node.isOnline,
+          lastHeartbeatAt: node.lastHeartbeatAt,
+          certDir: node.certDir,
+          lastError: node.lastError,
+          tokenHash: `mock-hash-${node.id}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })),
+        assignments: nodeAssignments.map((assignment) => ({
+          ...assignment,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })),
+      });
+    }
+    if (url.endsWith('/api/admin/backup/restore') && method === 'POST') {
+      const body = getBody() as {
+        settings: Settings;
+        dnsChannels: DnsChannel[];
+        domains: Domain[];
+        nodes: Array<{ id: string; name: string; ip: string; isOnline: boolean; lastHeartbeatAt: string | null; certDir: string; lastError: string | null }>;
+        assignments: NodeAssignment[];
+      };
+      settings = body.settings;
+      channels = body.dnsChannels.map((channel) => ({
+        id: channel.id,
+        name: channel.name,
+        provider: channel.provider,
+        credentials: channel.credentials,
+        createdAt: channel.createdAt,
+      }));
+      domains = body.domains;
+      nodeAssignments = body.assignments;
+      nodes = body.nodes.map((node) => ({
+        id: node.id,
+        name: node.name,
+        ip: node.ip,
+        isOnline: node.isOnline,
+        lastHeartbeatAt: node.lastHeartbeatAt,
+        certDir: node.certDir,
+        assignedDomainsCount: nodeAssignments.filter((item) => item.nodeId === node.id).length,
+        lastError: node.lastError,
+      }));
+      emitMockEvent({
+        type: 'job_finished',
+        level: 'warning',
+        message: 'Configuration restored from backup',
+        payload: { restored: true }
+      });
+      return createResponse({ success: true });
+    }
     if (url.endsWith('/api/admin/settings')) {
       if (method === 'GET') return createResponse(settings);
       if (method === 'PATCH') {

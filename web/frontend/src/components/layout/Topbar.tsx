@@ -7,10 +7,12 @@ import { navigation } from "./Sidebar";
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "../LocaleProvider";
 
 export function Topbar() {
   const { theme, setTheme } = useTheme();
   const { logout } = useAuth();
+  const { t } = useI18n();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
@@ -19,19 +21,19 @@ export function Topbar() {
         <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
           <SheetTrigger render={<Button variant="ghost" size="icon" className="lg:hidden" />}>
             <Menu className="h-5 w-5" />
-            <span className="sr-only">Toggle navigation menu</span>
+            <span className="sr-only">{t("topbar.toggleNav")}</span>
           </SheetTrigger>
-          <SheetContent side="left" className="w-72">
+          <SheetContent side="left" className="w-72 max-w-[85vw]">
             <SheetHeader className="mb-6">
               <SheetTitle className="flex items-center gap-2 text-lg">
                 <Server className="w-5 h-5 text-primary" />
-                SSL Sync Master
+                {t("app.name")}
               </SheetTitle>
             </SheetHeader>
             <nav className="flex flex-col space-y-1">
               {navigation.map((item) => (
                 <NavLink
-                  key={item.name}
+                  key={item.href}
                   to={item.href}
                   onClick={() => setMobileMenuOpen(false)}
                   className={({ isActive }) =>
@@ -44,13 +46,13 @@ export function Topbar() {
                   }
                 >
                   <item.icon className="w-4 h-4 flex-shrink-0" />
-                  {item.name}
+                  {t(item.labelKey)}
                 </NavLink>
               ))}
             </nav>
           </SheetContent>
         </Sheet>
-        <span className="font-semibold tracking-tight lg:hidden">SSL Sync Master</span>
+        <span className="font-semibold tracking-tight lg:hidden">{t("app.name")}</span>
       </div>
 
       <div className="flex items-center gap-2 sm:gap-4">
@@ -61,11 +63,11 @@ export function Topbar() {
         >
           <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
           <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-          <span className="sr-only">Toggle theme</span>
+          <span className="sr-only">{t("topbar.toggleTheme")}</span>
         </Button>
         <Button variant="ghost" size="icon" onClick={logout}>
           <LogOut className="h-[1.2rem] w-[1.2rem]" />
-          <span className="sr-only">Log out</span>
+          <span className="sr-only">{t("topbar.logout")}</span>
         </Button>
       </div>
     </header>

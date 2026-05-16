@@ -1,68 +1,113 @@
-# Walkthrough: SSL Certificate Management Console
+# Walkthrough
 
-This document outlines the architecture, setup instructions, and the recent enhancements made to the Web Management Console for the SSL Certificate Automatic Sync System.
+这份文档记录当前这版 SSL Sync Web 控制台的实现重点，方便合并前快速复盘。
 
-## Overview
-The web frontend is built using React, TypeScript, and Vite. It utilizes `shadcn/ui` for a clean, professional, and dark-mode-supported interface suitable for operations and maintenance tasks.
+## 1. 总体状态
 
-## Recent Enhancements & Fixes
-The recent work focused on resolving technical debt, improving type safety, and ensuring full functionality parity between the mock environment and the backend API contract.
+当前仓库已经覆盖一条完整的可运行链路：
 
-### 1. Mock Initialization Race Condition Fixed
-**Problem:** In `VITE_USE_MOCKS=true` mode, early API calls triggered by React Query could fire before the mock fetch interceptor was fully registered in `App.tsx`.
-**Solution:** The mock loading logic was moved to `main.tsx` using top-level `await import("./lib/mock")` prior to rendering the React root. This ensures that the mock intercepts all network traffic successfully.
+1. Master 端配置 DNS / WebDAV / Telegram / ACME
+2. 通过 Web 控制台管理域名
+3. 调用真实 `acme.sh` 申请或续签
+4. 上传证书到 WebDAV
+5. Node 端通过 API 模式注册、轮询命令、拉取证书并部署
+6. 执行结果回传 Master，统一写入任务日志并可由 Master 发送 Telegram
 
-### 2. Type Safety & ESLint Compliance
-**Problem:** Widespread use of `any` types bypassed TypeScript's strict checks, and Vite's ESLint setup surfaced multiple errors, including React Fast Refresh constraints.
-**Solution:**
-- Replaced `any` with strong typing (`unknown`, generic interfaces, or `Record<string, unknown>`) across API clients and components (`Nodes.tsx`, `Settings.tsx`, `Login.tsx`, etc.).
-- Adjusted `eslint.config.js` to intelligently handle `shadcn/ui` components without disabling core rules.
-- Suppressed legacy regex escape issues safely via file-level lint instructions.
-- `npm run lint` and `npm run build` now pass with zero errors.
+## 2. 前端实现重点
 
-### 3. DNS Channels & Dynamic Providers
-**Problem:** The UI needed to support multiple DNS providers (Cloudflare, Aliyun, Tencent Cloud, DNSPod, etc.) and allow a custom key/value configuration.
-**Solution:**
-- The `DnsChannels` page was heavily refactored to support conditional field rendering based on the selected provider.
-- Masked credentials logic (showing `***`) was properly integrated to prevent accidental exposure when editing an existing channel.
-- A "Custom" provider fallback was added, utilizing a dynamic key/value list.
+- React + TypeScript + Vite
+- 路由覆盖 Dashboard / Domains / Nodes / NodeDetail / DNS Channels / Jobs / Settings
+- 中英文切换
+- Mock 模式支持完整本地联调
+- 批量操作与移动端适配已补齐
 
-### 4. Jobs Logs & Status Filters
-**Problem:** Finding a specific job or inspecting its log was difficult due to the lack of filters and an easy way to copy logs.
-**Solution:**
-- `Jobs.tsx` was enhanced with `Type` and `Status` dropdown filters.
-- A "Copy Logs" button was added directly inside the active log viewing sheet.
-- Live SSE/polling ensures log content updates smoothly when jobs are actively running.
+### 重点页面
 
-### 5. Node Detailed Assignments
-**Problem:** The `NodeDetail` view was missing an interface to attach or detach domain assignments.
-**Solution:**
-- A new multi-select dialog allows users to edit which certificates should be synced to the target node.
-- The underlying Mock Store was updated to correctly emulate the assignment patching logic (`PUT /api/admin/nodes/:id/assignments`).
+#### Domains
 
-## Running the Application
+- 域名搜索
+- 状态筛选
+- DNS 渠道筛选
+- 批量申请 / 续签 / 同步 / 启用 / 停用 / 删除
 
-### Environment Variables
-Create a `.env` file in `web/frontend`:
-```env
-VITE_API_BASE_URL=/api
-VITE_USE_MOCKS=true
+#### Nodes / NodeDetail
+
+- 节点注册
+- 生成一键接入命令
+- 分配域名
+- 批量下发 / 批量删除节点本地证书
+
+#### Settings
+
+- WebDAV / Telegram / ACME 设置
+- 中英文切换
+- 配置下载备份 / 上传恢复
+
+## 3. 后端实现重点
+
+- FastAPI + SQLite
+- 管理后台接口与 Node API 接口分离
+- 真实 DNS / WebDAV / Telegram 测试
+- 域名批量动作接口 `/api/admin/domains/bulk-action`
+- 备份导出 `/api/admin/backup`
+- 备份恢复 `/api/admin/backup/restore`
+- Node command queue + ack/report
+
+## 4. Node 执行模型
+
+Node 端由两层脚本组成：
+
+- `cert-node-agent.sh`
+  - 负责心跳、拉 assignments、轮询 commands、ACK 执行结果
+- `cert-node-pull.sh`
+  - 负责真实下载证书、校验、部署、服务校验、重载
+
+当前采用 `systemd timer` 每 2 分钟轮询一次的近实时模式，不是服务端主动推送。
+
+## 5. Telegram 行为
+
+### Master 端
+
+- 单域名动作：按任务发消息
+- 批量域名动作：合并成一条汇总消息
+
+### Node API 模式
+
+- Node 本地不再直接发 Telegram
+- Node 执行摘要回传给 Master
+- 由 Master 统一写任务日志与发送 Telegram
+
+## 6. 当前已补齐的 UX 细节
+
+- Safari / 非安全上下文复制降级方案
+- 节点注册成功弹窗重排
+- 节点分配弹窗增加全选 / 清空
+- 域名筛选器与部分 Select 改为显示用户可读标签，而不是内部值
+
+## 7. 合并前建议校验
+
+```bash
+cd web/frontend
+npm run lint
+npm run build
+
+cd ../..
+python3 -m compileall web/backend/app
+bash -n cert-master-sync.sh
+bash -n cert-node-agent.sh
+bash -n cert-node-pull.sh
+bash -n install.sh
 ```
-*Note: Setting `VITE_USE_MOCKS=true` utilizes an in-memory storage layer allowing complete frontend development without needing the actual backend server.*
 
-### Commands
-- **Install dependencies:** `npm install`
-- **Run local server:** `npm run dev`
-- **Lint the code:** `npm run lint`
-- **Build for production:** `npm run build`
+建议再手动看一遍：
 
-### Authentication (Mock Mode)
-In local development with mock enabled, use the following credentials:
-- **Username:** `admin`
-- **Password:** `admin`
+- 域名页筛选器
+- 节点分配弹窗
+- 设置页语言选择
+- 节点注册后的安装命令弹窗
 
-## UI/UX Design System
-We leverage `shadcn/ui` and `Tailwind CSS`. 
-- The styling focuses on high info-density and operational efficiency.
-- Dark mode is automatically applied, maintaining a muted, professional zinc palette rather than deep blacks or distracting gradients.
-- Micro-interactions (like hover highlights on SHA256 hashes) provide utility without clutter.
+## 8. 剩余边界
+
+- 暂无完整自动化端到端测试
+- Node 命令执行依赖 timer 轮询，不是秒级即时推送
+- 前端构建目前有 Vite chunk size 提示，但不影响运行

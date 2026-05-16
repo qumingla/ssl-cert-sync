@@ -71,9 +71,9 @@ info "==== ${ACTION^^} 角色: ${ROLE} ===="
 
 # ── 安装依赖（仅安装时执行）─────────────────────────────────────────────────
 if [[ "${ACTION}" == "install" ]]; then
-    info "检查并安装依赖 (curl, openssl)..."
+    info "检查并安装依赖 (curl, openssl, python3)..."
     apt-get update -qq
-    apt-get install -y -qq curl openssl
+    apt-get install -y -qq curl openssl python3
 fi
 
 # ── Master 安装 ───────────────────────────────────────────────────────────────
@@ -108,6 +108,8 @@ install_master() {
 # ── Node 安装 ─────────────────────────────────────────────────────────────────
 install_node() {
     # 脚本
+    install -m 750 "${SCRIPT_DIR}/cert-node-agent.sh" /usr/local/bin/cert-node-agent.sh
+    info "脚本已安装: /usr/local/bin/cert-node-agent.sh"
     install -m 750 "${SCRIPT_DIR}/cert-node-pull.sh" /usr/local/bin/cert-node-pull.sh
     info "脚本已安装: /usr/local/bin/cert-node-pull.sh"
 
@@ -150,23 +152,32 @@ install_node() {
 
 # ── 更新配置 ──────────────────────────────────────────────────────────────────
 update_config_master() {
-    # 配置文件（始终覆盖；如旧文件存在则先备份）
     if [[ -f /etc/default/acme-master ]]; then
         cp /etc/default/acme-master "/etc/default/acme-master.bak.$(date '+%Y%m%d_%H%M%S')"
-        warn "旧配置已备份，正在覆盖新配置..."
+        info "检测到已有 Master 配置，已备份并保留当前 /etc/default/acme-master"
+        info "✅ Master 脚本已更新，现有配置未被覆盖"
+        return 0
     fi
+
     install -m 600 "${SCRIPT_DIR}/etc_default_acme-master.conf" /etc/default/acme-master
-    info "✅ Master 配置已更新"
+    info "✅ Master 配置模板已写入"
     warn "请编辑并确认配置文件内容: /etc/default/acme-master"
 }
 
 update_config_node() {
-    # 配置文件（始终覆盖；如旧文件存在则先备份）
+    install -m 750 "${SCRIPT_DIR}/cert-node-agent.sh" /usr/local/bin/cert-node-agent.sh
+    install -m 750 "${SCRIPT_DIR}/cert-node-pull.sh" /usr/local/bin/cert-node-pull.sh
+    install -m 644 "${SCRIPT_DIR}/cert-puller.service" /etc/systemd/system/cert-puller.service
+    install -m 644 "${SCRIPT_DIR}/cert-puller.timer" /etc/systemd/system/cert-puller.timer
+    systemctl daemon-reload
+
     if [[ -f /etc/default/cert-node ]]; then
         cp /etc/default/cert-node "/etc/default/cert-node.bak.$(date '+%Y%m%d_%H%M%S')"
-        warn "旧配置已备份，正在覆盖新配置..."
+        info "检测到已有 Node 配置，已备份并保留当前 /etc/default/cert-node"
+    else
+        install -m 600 "${SCRIPT_DIR}/etc_default_cert-node.conf" /etc/default/cert-node
+        warn "未检测到 Node 配置，已写入模板: /etc/default/cert-node"
     fi
-    install -m 600 "${SCRIPT_DIR}/etc_default_cert-node.conf" /etc/default/cert-node
     
     # 重新读取配置并确认目录
     local cert_base
@@ -174,9 +185,9 @@ update_config_node() {
     cert_base="${cert_base%/}"
     mkdir -p "${cert_base}"
     chmod 700 "${cert_base}"
-    info "✅ Node 配置已更新"
+    info "✅ Node 脚本与服务定义已更新"
     info "证书目录: ${cert_base} (700)"
-    warn "请编辑并确认配置文件内容: /etc/default/cert-node"
+    warn "如需检查配置，请查看: /etc/default/cert-node"
     
     # 可选：如果服务运行中，可以提示重启
     if systemctl is-active --quiet cert-puller.timer; then
@@ -234,6 +245,8 @@ uninstall_node() {
     # 脚本
     rm -f /usr/local/bin/cert-node-pull.sh
     info "已移除: /usr/local/bin/cert-node-pull.sh"
+    rm -f /usr/local/bin/cert-node-agent.sh
+    info "已移除: /usr/local/bin/cert-node-agent.sh"
 
     # 配置文件
     if [[ -f /etc/default/cert-node ]]; then

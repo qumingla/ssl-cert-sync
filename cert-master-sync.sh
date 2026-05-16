@@ -12,8 +12,44 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# ── CLI 参数 ──────────────────────────────────────────────────────────────────
+CONFIG_FILE="${SSL_SYNC_CONFIG_FILE:-/etc/default/acme-master}"
+REQUESTED_DOMAIN=""
+DNS_TEST_ONLY=0
+TELEGRAM_ENABLED="${TELEGRAM_ENABLED:-1}"
+CLI_FORCE_REISSUE=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --domain)
+            REQUESTED_DOMAIN="$2"
+            shift 2
+            ;;
+        --dns-test)
+            DNS_TEST_ONLY=1
+            TELEGRAM_ENABLED=0
+            shift
+            ;;
+        --no-telegram)
+            TELEGRAM_ENABLED=0
+            shift
+            ;;
+        --force-reissue)
+            CLI_FORCE_REISSUE=1
+            shift
+            ;;
+        *)
+            echo "[FATAL] 未知参数: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # ── 0. 加载配置 ───────────────────────────────────────────────────────────────
-CONFIG_FILE="/etc/default/acme-master"
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "[FATAL] 配置文件不存在: ${CONFIG_FILE}" >&2
     exit 1
@@ -21,12 +57,25 @@ fi
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"
 
+if [[ ${CLI_FORCE_REISSUE} -eq 1 ]]; then
+    FORCE_REISSUE="1"
+fi
+
 # 检查必要变量（CF 凭证二选一，不强制 :?）
-: "${TG_BOT_TOKEN:?}" "${TG_CHAT_ID:?}" \
-  "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}" \
-  "${ACME_HOME:=/root/.acme.sh}" \
+: "${ACME_HOME:=/root/.acme.sh}" \
+  "${BUNDLED_ACME_HOME:=/opt/acme.sh}" \
   "${STAGING_BASE:=/tmp/acme_staging}" \
-  "${LOG_FILE:=/var/log/cert-master-sync.log}"
+  "${LOG_FILE:=/var/log/cert-master-sync.log}" \
+  "${ACME_SERVER:=letsencrypt}" \
+  "${ACME_ACCOUNT_EMAIL:=}"
+
+if [[ "${DNS_TEST_ONLY}" != "1" ]]; then
+    : "${WEBDAV_URL:?}" "${WEBDAV_AUTH:?}"
+fi
+
+if [[ "${TELEGRAM_ENABLED}" == "1" ]]; then
+    : "${TG_BOT_TOKEN:?}" "${TG_CHAT_ID:?}"
+fi
 
 # 确保全局默认 DNS 插件已配置
 if [[ -z "${DNS_PROVIDER:-}" ]]; then
@@ -47,6 +96,15 @@ fi
 if [[ ${#DOMAINS[@]} -eq 0 ]]; then
     echo "[FATAL] 域名列表为空: 请在 DOMAINS 数组或 DOMAIN_DNS_PROVIDER 中至少填写一个域名" >&2
     exit 1
+fi
+
+if [[ -n "${REQUESTED_DOMAIN}" ]]; then
+    DOMAINS=("${REQUESTED_DOMAIN}")
+fi
+
+BULK_TG_MODE=0
+if [[ ${#DOMAINS[@]} -gt 1 ]]; then
+    BULK_TG_MODE=1
 fi
 
 # ── 1. 日志函数 ───────────────────────────────────────────────────────────────
@@ -70,6 +128,11 @@ html_escape() {
 
 # 用法: send_tg_msg "❤️ 标题" "正文"
 send_tg_msg() {
+    if [[ "${TELEGRAM_ENABLED}" != "1" ]]; then
+        log "INFO" "TG 已禁用，跳过通知: $1"
+        return 0
+    fi
+
     local title="$1"
     local body="${2:-}"
 
@@ -103,6 +166,16 @@ send_tg_msg() {
     else
         log "WARN" "TG 通知发送失败, HTTP ${http_code:-err}"
     fi
+}
+
+notify_domain_tg() {
+    local title="$1"
+    local body="${2:-}"
+    if [[ "${BULK_TG_MODE}" == "1" ]]; then
+        log "INFO" "批量模式已启用，跳过单域名 TG 通知: ${title}"
+        return 0
+    fi
+    send_tg_msg "${title}" "${body}"
 }
 
 # ── 3. 上传至 OpenList (WebDAV) ───────────────────────────────────────────────
@@ -159,18 +232,57 @@ ensure_webdav_dir() {
     log "INFO" "MKCOL ${remote_url} → HTTP ${http_code}"
 }
 
+bootstrap_acme_home() {
+    local acme_bin="${ACME_HOME}/acme.sh"
+    if [[ -x "${acme_bin}" ]]; then
+        return 0
+    fi
+
+    local bundled_bin="${BUNDLED_ACME_HOME}/acme.sh"
+    if [[ ! -x "${bundled_bin}" ]]; then
+        return 1
+    fi
+
+    log "WARN" "ACME_HOME 缺少 acme.sh，尝试从镜像内置目录补全: ${BUNDLED_ACME_HOME} -> ${ACME_HOME}"
+    install -d -m 700 "${ACME_HOME}"
+    cp -a -n "${BUNDLED_ACME_HOME}/." "${ACME_HOME}/"
+    chmod 755 "${ACME_HOME}/acme.sh" 2>/dev/null || true
+    [[ -x "${ACME_HOME}/acme.sh" ]]
+}
+
 # ── 5. 环境预检（全局执行一次）────────────────────────────────────────────────
 pre_check() {
     log "INFO" "======== 开始证书同步任务（共 ${#DOMAINS[@]} 个域名）========"
 
     local acme_bin="${ACME_HOME}/acme.sh"
     if [[ ! -x "${acme_bin}" ]]; then
+        bootstrap_acme_home || true
+    fi
+    if [[ ! -x "${acme_bin}" ]]; then
         log "ERROR" "acme.sh 未找到: ${acme_bin}"
         send_tg_msg "🚨 [FATAL] Master 任务失败" "acme.sh 未安装或路径错误: ${acme_bin}"
         exit 1
     fi
+
+    if [[ "${ACME_SERVER}" == "zerossl" && -z "${ACME_ACCOUNT_EMAIL}" ]]; then
+        log "ERROR" "ZeroSSL 需要先配置账户邮箱，请在设置中填写 ACME 账户邮箱，或将默认 CA 改为 letsencrypt"
+        send_tg_msg "🚨 [FATAL] Master 任务失败" "ZeroSSL 需要 ACME 账户邮箱，当前 accountEmail 为空"
+        exit 1
+    fi
+
     log "INFO" "acme.sh: $("${acme_bin}" --version 2>&1 | head -1)"
     log "INFO" "OpenSSL: $(openssl version)"
+    log "INFO" "ACME CA: ${ACME_SERVER}"
+
+    if ! "${acme_bin}" --set-default-ca --server "${ACME_SERVER}" >> "${LOG_FILE}" 2>&1; then
+        log "WARN" "设置默认 CA 失败，后续申请仍将显式指定 --server ${ACME_SERVER}"
+    fi
+
+    if [[ -n "${ACME_ACCOUNT_EMAIL}" ]]; then
+        if ! "${acme_bin}" --register-account -m "${ACME_ACCOUNT_EMAIL}" --server "${ACME_SERVER}" >> "${LOG_FILE}" 2>&1; then
+            log "WARN" "注册/刷新 ACME 账户失败，将继续尝试签发: ${ACME_ACCOUNT_EMAIL}"
+        fi
+    fi
 
     command -v curl &>/dev/null || { log "ERROR" "curl 未安装"; exit 1; }
     install -d -m 700 "${STAGING_BASE}"
@@ -233,7 +345,7 @@ process_domain() {
         "${ACME_HOME}/${domain}/fullchain.cer"; do
         [[ -f "${_f}" ]] && { acme_cert="${_f}"; break; }
     done
-    if [[ -n "${acme_cert}" ]]; then
+    if [[ "${DNS_TEST_ONLY}" != "1" && -z "${FORCE_REISSUE:-}" && -n "${acme_cert}" ]]; then
         local expire_epoch now_epoch days_left
         expire_epoch=$(openssl x509 -noout -enddate -in "${acme_cert}" 2>/dev/null \
             | cut -d= -f2 | xargs -I{} date -d '{}' '+%s' 2>/dev/null || echo 0)
@@ -261,10 +373,16 @@ process_domain() {
 
     local acme_bin="${ACME_HOME}/acme.sh"
     local acme_log="${staging_dir}/acme_issue.log"
+    local acme_stage_flag=""
+    if [[ "${DNS_TEST_ONLY}" == "1" ]]; then
+        acme_stage_flag="--staging"
+    fi
 
     "${acme_bin}" \
         --issue \
+        ${acme_stage_flag:+${acme_stage_flag}} \
         ${FORCE_REISSUE:+--force} \
+        --server "${ACME_SERVER}" \
         --dns "${dns_plugin}" \
         -d "*.${domain}" \
         -d "${domain}" \
@@ -280,11 +398,17 @@ process_domain() {
             log "ERROR" "[${domain}] acme.sh 申请失败 (exit ${exit_code})"
             local err_summary
             err_summary="$(tail -20 "${acme_log}" 2>/dev/null || echo '无法读取日志')"
-            send_tg_msg "🚨 [ERROR] 证书申请失败: ${domain}" \
+            notify_domain_tg "🚨 [ERROR] 证书申请失败: ${domain}" \
                 "退出码: ${exit_code}\n日志摘要:\n${err_summary}"
             return 1
         fi
     }
+
+    if [[ "${DNS_TEST_ONLY}" == "1" ]]; then
+        log "INFO" "[${domain}] ✅ DNS API 实测通过（acme.sh staging）"
+        find "${staging_dir}" -type f -exec shred -u {} \; 2>/dev/null || rm -f "${staging_dir}"/* 2>/dev/null || true
+        return 0
+    fi
 
     # 6b. 提取证书
     local key_file="${staging_dir}/privkey.pem"
@@ -299,7 +423,7 @@ process_domain() {
 
     if [[ ! -s "${key_file}" ]] || [[ ! -s "${chain_file}" ]]; then
         log "ERROR" "[${domain}] 证书文件提取失败或为空"
-        send_tg_msg "🚨 [ERROR] 证书提取失败: ${domain}" "key 或 fullchain 文件为空"
+        notify_domain_tg "🚨 [ERROR] 证书提取失败: ${domain}" "key 或 fullchain 文件为空"
         return 1
     fi
     chmod 600 "${key_file}"; chmod 644 "${chain_file}"
@@ -311,7 +435,7 @@ process_domain() {
     cert_pub="$(openssl x509 -pubkey -noout -in "${chain_file}" 2>/dev/null | sha256sum | awk '{print $1}')"
     if [[ -z "${key_pub}" ]] || [[ "${key_pub}" != "${cert_pub}" ]]; then
         log "ERROR" "[${domain}] 私钥与证书公钥不匹配，禁止上传 (key=${key_pub:0:12}... cert=${cert_pub:0:12}...)"
-        send_tg_msg "🚨 [ERROR] 证书一致性校验失败: ${domain}" "私钥与证书公钥不匹配，已中止上传"
+        notify_domain_tg "🚨 [ERROR] 证书一致性校验失败: ${domain}" "私钥与证书公钥不匹配，已中止上传"
         return 1
     fi
     log "INFO" "[${domain}] ✅ 私钥与证书一致性校验通过"
@@ -335,7 +459,7 @@ process_domain() {
 
     if [[ ${upload_failed} -eq 1 ]]; then
         log "ERROR" "[${domain}] 部分文件上传失败"
-        send_tg_msg "🚨 [ERROR] 上传失败: ${domain}" "WebDAV: ${WEBDAV_URL}/${domain}/"
+        notify_domain_tg "🚨 [ERROR] 上传失败: ${domain}" "WebDAV: ${WEBDAV_URL}/${domain}/"
         return 1
     fi
 
@@ -351,7 +475,7 @@ process_domain() {
         notify_title="🔄 [RENEW] 证书续签成功: ${domain}"
     fi
 
-    send_tg_msg "${notify_title}" \
+    notify_domain_tg "${notify_title}" \
         "到期: ${cert_expiry}
 DNS渠道: ${dns_plugin}
 SHA256: ${cert_sha256}
