@@ -14,6 +14,11 @@
 6. Node 端通过 API 模式注册、轮询命令、拉取证书并部署
 7. 执行结果回传 Master，统一写入任务日志并可由 Master 发送 Telegram
 
+说明：
+
+- Node 拉取证书时默认优先使用 WebDAV
+- 如果 WebDAV 不可用、配置为空，或单次下载失败，会自动回退到 Master API 直连拉取证书包
+
 ## 2. 前端实现重点
 
 - React + TypeScript + Vite
@@ -69,6 +74,7 @@ Node 端由两层脚本组成：
   - 负责心跳、拉 assignments、轮询 commands、ACK 执行结果
 - `cert-node-pull.sh`
   - 负责真实下载证书、校验、部署、服务校验、重载
+  - 下载策略为 WebDAV 优先，Master API 回退
 
 当前采用 `systemd timer` 每 2 分钟轮询一次的近实时模式，不是服务端主动推送。
 

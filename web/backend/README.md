@@ -16,6 +16,7 @@
   - assignments 下发
   - command queue 轮询
   - 执行结果 ACK / report
+  - 证书文件直连拉取回退（当 WebDAV 不可用或未配置时）
 - 配置备份导出与恢复
 
 ## 本地启动
@@ -68,6 +69,8 @@ Node 轮询模式接口如下：
 - `POST /api/node/v1/heartbeat`
 - `GET /api/node/v1/assignments`
 - `GET /api/node/v1/commands`
+- `GET /api/node/v1/certificates/{domain}/sha256`
+- `GET /api/node/v1/certificates/{domain}/bundle`
 - `POST /api/node/v1/reports`
 - `POST /api/node/v1/commands/{command_id}/ack`
 
@@ -82,3 +85,4 @@ Web 控制台通过后台接口向节点排队命令：
 - 后端镜像会在构建时克隆官方 `acme.sh` 到 `/opt/acme.sh`
 - 如果运行时 `ACME Home` 目录为空，系统会自动补齐
 - Node API 模式下，节点执行摘要会回传给 Master，由 Master 统一写任务日志并推送 Telegram
+- Node puller 默认优先走 WebDAV；如果 WebDAV 拉取失败或未配置，会自动回退到 Master API 直连拉取证书
